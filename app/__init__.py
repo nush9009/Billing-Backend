@@ -9,6 +9,7 @@ from flask import Flask, send_from_directory, send_file
 import os
 from pathlib import Path
 
+
 db = SQLAlchemy()
 migrate = Migrate()
 jwt = JWTManager()
@@ -44,6 +45,8 @@ def create_app():
     from app.routes.admin import admin_bp
     from app.routes.company import company_bp
     from app.routes.projects import projects_bp
+    from app.routes.billing import billing_bp
+
 
     app.register_blueprint(company_bp, url_prefix='/api/company')
     app.register_blueprint(projects_bp, url_prefix='/api/projects')
@@ -51,7 +54,7 @@ def create_app():
     app.register_blueprint(seller_bp, url_prefix='/api/seller')
     app.register_blueprint(client_bp, url_prefix='/api/client')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
-    
+    app.register_blueprint(billing_bp, url_prefix='/api/billing')
     
     react_build_path = Path("dist")  # or Path("frontend/dist") if in subdirectory
     print(react_build_path)
