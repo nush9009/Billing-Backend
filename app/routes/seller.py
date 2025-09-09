@@ -1,93 +1,224 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from app import db, bcrypt
-# UPDATED: Import the new, renamed models
-from app.models import Tier1Seller, Tier2Seller, Admin, Project, Commission, User
-from app.utils.auth import jwt_required_custom
+from app import db
+from app.models import Tier1Seller, Tier2Seller, Admin
 from datetime import datetime
 
 seller_bp = Blueprint('seller', __name__)
 
-# UPDATED: Added explicit 'endpoint' names to prevent conflicts
-@seller_bp.route('/tier2-sellers', methods=['POST'], endpoint='add_tier2_seller')
-@jwt_required_custom
-def add_tier2_seller():
-    """Allows a logged-in Tier1Seller to add a new Tier2Seller."""
+# ------------------ HELPER ------------------
+def is_admin(user):
+    return user.get('role') == 'admin'
+
+def is_tier1(user):
+    return user.get('role') == 'tier1_seller'
+
+def is_tier2(user):
+    return user.get('role') == 'tier2_seller'
+
+
+# ------------------ CREATE TIER1 SELLER ------------------
+@seller_bp.route('/tier1', methods=['POST'])
+@jwt_required()
+def create_tier1():
     current_user = get_jwt_identity()
-    
-    if current_user.get('role') != 'tier1_seller':
-        return jsonify({'message': 'Tier 1 Seller access required'}), 403
-    
+    if not is_admin(current_user):
+        return jsonify({'message': 'Only admins can create Tier1 sellers'}), 403
+
     data = request.get_json()
-    # ... (rest of the logic is the same)
-    password_hash = bcrypt.generate_password_hash(data['password']).decode('utf-8')
-    new_tier2_seller = Tier2Seller(
-        tier1_seller_id=current_user.get('id'),
+    if not data or not data.get('name') or not data.get('admin_email'):
+        return jsonify({'message': 'Name and admin_email are required'}), 400
+
+    new_tier1 = Tier1Seller(
         name=data['name'],
-        subdomain=data['subdomain'],
         admin_email=data['admin_email'],
-        password_hash=password_hash
+        password_hash=data.get('password_hash', ''),  # normally through register
+        subdomain=data.get('subdomain')
     )
-    db.session.add(new_tier2_seller)
+    db.session.add(new_tier1)
     db.session.commit()
-    return jsonify({'message': 'Tier-2 Seller created successfully'}), 201
 
-@seller_bp.route('/admins/<admin_id>', methods=['DELETE'], endpoint='delete_admin_by_seller')
-@jwt_required_custom
-def delete_admin(admin_id):
-    """Allows a Tier1Seller to soft-delete an Admin they own."""
-    current_user = get_jwt_identity()
-    admin = Admin.query.get(admin_id)
-
-    if not admin:
-        return jsonify({'message': 'Admin account not found'}), 404
-    
-    # Verify the logged-in Tier1Seller owns this Admin
-    if current_user.get('role') == 'tier1_seller' and admin.tier1_seller_id == current_user.get('id'):
-        try:
-            admin.status = 'inactive'
-            db.session.commit()
-            return jsonify({'message': 'Admin account deleted successfully'}), 200
-        except Exception as e:
-            db.session.rollback()
-            return jsonify({'message': str(e)}), 500
-
-    return jsonify({'message': 'Access denied'}), 403
+    return jsonify({'message': 'Tier1 seller created successfully', 'id': new_tier1.id}), 201
 
 
-@seller_bp.route('/dashboard', methods=['GET'], endpoint='get_seller_dashboard')
-@jwt_required_custom
-def get_comprehensive_seller_dashboard():
-    """Provides dashboard data for a logged-in Tier1 or Tier2 seller."""
-    current_user = get_jwt_identity()
-    user_id = current_user.get('id')
-    user_role = current_user.get('role')
+# ------------------ GET ALL TIER1 SELLERS ------------------
+@seller_bp.route('/tier1', methods=['GET'])
+@jwt_required()
+def get_tier1_sellers():
+    sellers = Tier1Seller.query.all()
+    result = [
+        {'id': s.id, 'name': s.name, 'admin_email': s.admin_email, 'subdomain': s.subdomain}
+        for s in sellers
+    ]
+    return jsonify(result), 200
 
-    # ... (rest of dashboard logic using Admin and Tier1Seller models)
-    if user_role == 'tier1_seller':
-        seller = Tier1Seller.query.get(user_id)
-        admins = Admin.query.filter_by(tier1_seller_id=user_id).all()
-        tier2s = Tier2Seller.query.filter_by(tier1_seller_id=user_id).all()
-    elif user_role == 'tier2_seller':
-        seller = Tier2Seller.query.get(user_id)
-        admins = Admin.query.filter_by(tier2_seller_id=user_id).all()
-        tier2s = []
-    else:
-        return jsonify({'message': 'Access denied'}), 403
 
+# ------------------ GET SINGLE TIER1 SELLER ------------------
+@seller_bp.route('/tier1/<seller_id>', methods=['GET'])
+@jwt_required()
+def get_tier1_seller(seller_id):
+    seller = Tier1Seller.query.get(seller_id)
     if not seller:
-        return jsonify({'message': 'Seller account not found'}), 404
+        return jsonify({'message': 'Tier1 seller not found'}), 404
 
-    # The rest of your comprehensive dashboard logic can go here.
-    # This is a simplified version for now.
+    return jsonify({'id': seller.id, 'name': seller.name, 'admin_email': seller.admin_email, 'subdomain': seller.subdomain}), 200
+
+
+# ------------------ UPDATE TIER1 SELLER ------------------
+@seller_bp.route('/tier1/<seller_id>', methods=['PUT'])
+@jwt_required()
+def update_tier1(seller_id):
+    current_user = get_jwt_identity()
+    if not is_admin(current_user):
+        return jsonify({'message': 'Only admins can update Tier1 sellers'}), 403
+
+    seller = Tier1Seller.query.get(seller_id)
+    if not seller:
+        return jsonify({'message': 'Tier1 seller not found'}), 404
+
+    data = request.get_json()
+    seller.name = data.get('name', seller.name)
+    seller.subdomain = data.get('subdomain', seller.subdomain)
+
+    db.session.commit()
+    return jsonify({'message': 'Tier1 seller updated successfully'}), 200
+
+
+# ------------------ DELETE TIER1 SELLER ------------------
+@seller_bp.route('/tier1/<seller_id>', methods=['DELETE'])
+@jwt_required()
+def delete_tier1(seller_id):
+    current_user = get_jwt_identity()
+    if not is_admin(current_user):
+        return jsonify({'message': 'Only admins can delete Tier1 sellers'}), 403
+
+    seller = Tier1Seller.query.get(seller_id)
+    if not seller:
+        return jsonify({'message': 'Tier1 seller not found'}), 404
+
+    db.session.delete(seller)
+    db.session.commit()
+    return jsonify({'message': 'Tier1 seller deleted successfully'}), 200
+
+
+# ===============================================================
+# ------------------ TIER2 SELLERS ------------------------------
+# ===============================================================
+
+# ------------------ CREATE TIER2 SELLER ------------------
+@seller_bp.route('/tier2', methods=['POST'])
+# ------------------ CREATE TIER2 SELLER ------------------
+@seller_bp.route('/tier2', methods=['POST'])
+@jwt_required()
+def create_tier2():
+    current_user = get_jwt_identity()
+
+    data = request.get_json()
+    if not data or not data.get('name') or not data.get('admin_email'):
+        return jsonify({'message': 'Name and admin_email are required'}), 400
+
+    # If Admin is creating, they must provide tier1_seller_id
+    tier1_seller_id = None
+    if is_tier1(current_user):
+        tier1_seller_id = current_user['id']
+    elif is_admin(current_user):
+        tier1_seller_id = data.get('tier1_seller_id')
+        if not tier1_seller_id:
+            return jsonify({'message': 'tier1_seller_id is required when admin creates Tier2 seller'}), 400
+    else:
+        return jsonify({'message': 'Unauthorized'}), 403
+
+    new_tier2 = Tier2Seller(
+        name=data['name'],
+        admin_email=data['admin_email'],
+        password_hash=data.get('password_hash', ''),  # normally through register
+        tier1_seller_id=tier1_seller_id,
+        subdomain=data.get('subdomain')
+    )
+    db.session.add(new_tier2)
+    db.session.commit()
+
+    return jsonify({'message': 'Tier2 seller created successfully', 'id': new_tier2.id}), 201
+
+
+
+# ------------------ GET ALL TIER2 SELLERS ------------------
+@seller_bp.route('/tier2', methods=['GET'])
+@jwt_required()
+def get_tier2_sellers():
+    current_user = get_jwt_identity()
+
+    if is_tier1(current_user):
+        sellers = Tier2Seller.query.filter_by(tier1_seller_id=current_user['id']).all()
+    elif is_admin(current_user):
+        sellers = Tier2Seller.query.all()
+    else:
+        return jsonify({'message': 'Unauthorized'}), 403
+
+    result = [
+        {'id': s.id, 'name': s.name, 'admin_email': s.admin_email, 'subdomain': s.subdomain}
+        for s in sellers
+    ]
+    return jsonify(result), 200
+
+
+# ------------------ GET SINGLE TIER2 SELLER ------------------
+
+@seller_bp.route('/tier2/<seller_id>', methods=['GET'])
+@jwt_required()
+def get_tier2_seller(seller_id):
+    current_user = get_jwt_identity()
+    seller = Tier2Seller.query.get(seller_id)
+    if not seller:
+        return jsonify({'message': 'Tier2 seller not found'}), 404
+
+    # Restrict Tier2: can only view their own profile
+    if is_tier2(current_user) and current_user['id'] != seller.id:
+        return jsonify({'message': 'Unauthorized'}), 403
+
     return jsonify({
-        'sellerData': {
-            'id': seller.id,
-            'name': seller.name,
-            'type': user_role,
-            'total_clients': len(admins)
-        },
-        'clients': [{'id': a.id, 'name': a.name, 'company': a.company} for a in admins],
-        'tier2_sellers': [{'id': t2.id, 'name': t2.name} for t2 in tier2s]
+        'id': seller.id,
+        'name': seller.name,
+        'admin_email': seller.admin_email,
+        'subdomain': seller.subdomain
     }), 200
 
+
+
+# ------------------ UPDATE TIER2 SELLER ------------------
+@seller_bp.route('/tier2/<seller_id>', methods=['PUT'])
+@jwt_required()
+def update_tier2(seller_id):
+    current_user = get_jwt_identity()
+    seller = Tier2Seller.query.get(seller_id)
+
+    if not seller:
+        return jsonify({'message': 'Tier2 seller not found'}), 404
+
+    if not (is_admin(current_user) or (is_tier1(current_user) and seller.tier1_seller_id == current_user['id'])):
+        return jsonify({'message': 'Unauthorized'}), 403
+
+    data = request.get_json()
+    seller.name = data.get('name', seller.name)
+    seller.subdomain = data.get('subdomain', seller.subdomain)
+
+    db.session.commit()
+    return jsonify({'message': 'Tier2 seller updated successfully'}), 200
+
+
+# ------------------ DELETE TIER2 SELLER ------------------
+@seller_bp.route('/tier2/<seller_id>', methods=['DELETE'])
+@jwt_required()
+def delete_tier2(seller_id):
+    current_user = get_jwt_identity()
+    seller = Tier2Seller.query.get(seller_id)
+
+    if not seller:
+        return jsonify({'message': 'Tier2 seller not found'}), 404
+
+    if not (is_admin(current_user) or (is_tier1(current_user) and seller.tier1_seller_id == current_user['id'])):
+        return jsonify({'message': 'Unauthorized'}), 403
+
+    db.session.delete(seller)
+    db.session.commit()
+    return jsonify({'message': 'Tier2 seller deleted successfully'}), 200
