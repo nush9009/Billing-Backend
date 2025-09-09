@@ -5,7 +5,7 @@ from flask_jwt_extended import JWTManager
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from flask_marshmallow import Marshmallow
-from flask import Flask, send_from_directory, send_file
+from flask import send_from_directory, send_file, request
 import os
 from pathlib import Path
 
@@ -30,13 +30,20 @@ def create_app():
     bcrypt.init_app(app)
     ma.init_app(app)
     
-    # Import models to ensure they're registered
-    from app.models import Seller, Tier2Seller, Client, SubscriptionPlan, Project, User, Commission, Report
+    # UPDATED: Import the renamed models
+    from app.models import Tier1Seller, Tier2Seller, Admin, Project, User, Commission, Report
     
     # Initialize database automatically on first run
     with app.app_context():
-        from app.database_setup import initialize_database
+        from app.database_setup import initialize_database, register_db_commands
+        
+        # Register CLI commands
+        register_db_commands(app)
+        
+        # Auto-initialize database on startup
         initialize_database()
+    
+    
     
     # Register blueprints
     from app.routes.auth import auth_bp
@@ -114,30 +121,29 @@ def create_app():
     @app.route('/api/db-info')
     def db_info():
         try:
-            from app.models import Seller, Tier2Seller, Client, Project, SubscriptionPlan, User, Commission
+            # UPDATED: Use the new model names
+            from app.models import Tier1Seller, Tier2Seller, Admin, Project, User, Commission
             
-            seller_count = Seller.query.count()
+            tier1_seller_count = Tier1Seller.query.count()
             tier2_seller_count = Tier2Seller.query.count()
-            client_count = Client.query.count()
+            admin_count = Admin.query.count()
             project_count = Project.query.count()
-            plan_count = SubscriptionPlan.query.count()
             user_count = User.query.count()
             commission_count = Commission.query.count()
             
             return {
                 'database_status': 'connected',
                 'stats': {
-                    'sellers': seller_count,
+                    'tier1_sellers': tier1_seller_count,
                     'tier2_sellers': tier2_seller_count,
-                    'clients': client_count,
+                    'admins': admin_count,
                     'projects': project_count,
-                    'subscription_plans': plan_count,
                     'users': user_count,
                     'commissions': commission_count
                 },
                 'sample_data': {
-                    'sellers_available': seller_count > 0,
-                    'clients_available': client_count > 0,
+                    'sellers_available': tier1_seller_count > 0,
+                    'admins_available': admin_count > 0,
                     'projects_available': project_count > 0
                 }
             }, 200
@@ -152,9 +158,9 @@ def create_app():
     def app_status():
         """Complete application status"""
         try:
-            from app.models import Seller
-            # Test DB connection
-            Seller.query.first()
+            # UPDATED: Check against the new Tier1Seller model
+            from app.models import Tier1Seller
+            Tier1Seller.query.first()
             db_status = 'connected'
         except Exception as e:
             db_status = f'error: {str(e)}'
@@ -178,6 +184,7 @@ def create_app():
     @app.route('/api/sample-logins')
     def sample_logins():
         """Show available sample login accounts"""
+        # Note: This is just for display, but updated for clarity
         return {
             'message': 'Available sample login accounts',
             'accounts': {
@@ -197,13 +204,6 @@ def create_app():
                         'description': 'MarketTrendsAI admin'
                     },
                     {
-                        'role': 'Tier-1 Seller',
-                        'email': 'admin@xyzseller.com',
-                        'password': 'admin123',
-                        'user_type': 'seller',
-                        'description': 'XYZSeller admin'
-                    },
-                    {
                         'role': 'Tier-2 Seller',
                         'email': 'admin@datainsightspro.com',
                         'password': 'admin123',
@@ -213,18 +213,11 @@ def create_app():
                 ],
                 'client_accounts': [
                     {
-                        'role': 'Client User',
+                        'role': 'Admin User (formerly Client)',
                         'email': 'john@forte.com',
                         'password': 'client123',
                         'user_type': 'client',
                         'company': 'Forte Corp'
-                    },
-                    {
-                        'role': 'Client User',
-                        'email': 'sarah@servicon.com',
-                        'password': 'client123',
-                        'user_type': 'client',
-                        'company': 'Servicon Ltd'
                     }
                 ]
             },
@@ -236,16 +229,12 @@ def create_app():
         """Custom 404 handler"""
         return {
             'error': 'API endpoint not found',
-            'message': f'The endpoint {request.path} does not exist',
+            'message': f'The endpoint {request.path} does not exist.',
             'available_endpoints': [
                 '/api/health',
                 '/api/db-info',
                 '/api/status',
-                '/api/sample-logins',
-                '/api/auth/login',
-                '/api/seller/dashboard',
-                '/api/client/dashboard',
-                '/api/admin/dashboard'
+                '/api/sample-logins'
             ]
         }, 404
     
@@ -254,8 +243,9 @@ def create_app():
         """Custom 500 handler"""
         return {
             'error': 'Internal server error',
-            'message': 'Something went wrong on the server',
-            'suggestion': 'Check server logs for details'
+            'message': 'Something went wrong on the server.',
+            'suggestion': 'Check server logs for details.'
         }, 500
     
     return app
+

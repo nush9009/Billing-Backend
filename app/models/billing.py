@@ -9,7 +9,8 @@ class ProjectPricing(db.Model):
     __tablename__ = 'project_pricing'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    seller_id = db.Column(db.String(36), db.ForeignKey('sellers.id'))
+    # UPDATED: ForeignKey now points to the 'tier1_sellers' table.
+    seller_id = db.Column(db.String(36), db.ForeignKey('tier1_sellers.id'))
     tier2_seller_id = db.Column(db.String(36), db.ForeignKey('tier2_sellers.id'))
     project_type = db.Column(db.String(100), nullable=False)  # Market Research, Strategy, etc.
     pricing_model = db.Column(db.String(50), nullable=False)  # fixed, hourly, milestone
@@ -53,7 +54,8 @@ class Invoice(db.Model):
     __tablename__ = 'invoices'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    client_id = db.Column(db.String(36), db.ForeignKey('clients.id'), nullable=False)
+    # UPDATED: ForeignKey now points to the 'admins' table.
+    client_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=False)
     invoice_number = db.Column(db.String(50), unique=True, nullable=False)
     
     # Invoice totals
@@ -75,4 +77,5 @@ class Invoice(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    client = db.relationship('Client', backref='invoices', lazy=True)
+    # UPDATED: backref is updated to reflect the new Admin model name.
+    client = db.relationship('Admin', backref='invoices', lazy=True)

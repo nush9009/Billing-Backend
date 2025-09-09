@@ -2,12 +2,14 @@ from app import db
 from datetime import datetime
 import uuid
 
-class Seller(db.Model):
-    __tablename__ = 'sellers'
+# RENAMED: The 'Seller' model is now 'Tier1Seller' as requested.
+class Tier1Seller(db.Model):
+    # The table in the database will now be named 'tier1_sellers'.
+    __tablename__ = 'tier1_sellers'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = db.Column(db.String(255), nullable=False)
-    subdomain = db.Column(db.String(100), unique=True, nullable=False)
+    subdomain = db.Column(db.String(100), unique=True, nullable=True)
     admin_email = db.Column(db.String(255), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     commission_type = db.Column(db.String(50))
@@ -20,17 +22,20 @@ class Seller(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    tier2_sellers = db.relationship('Tier2Seller', backref='parent_seller', lazy=True)
-    clients = db.relationship('Client', backref='seller', lazy=True)
-    subscription_plans = db.relationship('SubscriptionPlan', backref='seller', lazy=True)
+    # UPDATED: The back-reference is updated for clarity.
+    tier2_sellers = db.relationship('Tier2Seller', backref='parent_tier1_seller', lazy=True)
+    # UPDATED: This now links to the new 'Admin' model and is renamed for clarity.
+    admins = db.relationship('Admin', backref='tier1_seller', lazy=True)
+    
 
 class Tier2Seller(db.Model):
     __tablename__ = 'tier2_sellers'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    tier1_seller_id = db.Column(db.String(36), db.ForeignKey('sellers.id'), nullable=False)
+    # UPDATED: This ForeignKey now correctly points to the renamed 'tier1_sellers' table.
+    tier1_seller_id = db.Column(db.String(36), db.ForeignKey('tier1_sellers.id'), nullable=False)
     name = db.Column(db.String(255), nullable=False)
-    subdomain = db.Column(db.String(100), unique=True, nullable=False)
+    subdomain = db.Column(db.String(100), unique=True, nullable=True)
     admin_email = db.Column(db.String(255), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     commission_type = db.Column(db.String(50))
@@ -40,5 +45,5 @@ class Tier2Seller(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    clients = db.relationship('Client', backref='tier2_seller', lazy=True)
-    subscription_plans = db.relationship('SubscriptionPlan', backref='tier2_seller', lazy=True)
+    # UPDATED: This relationship now correctly points to the new 'Admin' model.
+    admins = db.relationship('Admin', backref='tier2_seller', lazy=True)

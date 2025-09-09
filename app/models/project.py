@@ -6,7 +6,8 @@ class Project(db.Model):
     __tablename__ = 'projects'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    client_id = db.Column(db.String(36), db.ForeignKey('clients.id'), nullable=False)
+    # UPDATED: ForeignKey now points to the 'admins' table.
+    client_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=False)
     name = db.Column(db.String(255), nullable=False)
     status = db.Column(db.String(20), default='active')
     project_type = db.Column(db.String(100))
@@ -28,7 +29,8 @@ class User(db.Model):
     __tablename__ = 'users'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    client_id = db.Column(db.String(36), db.ForeignKey('clients.id'), nullable=False)
+    # UPDATED: ForeignKey now points to the 'admins' table.
+    client_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False)
     name = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(50), nullable=False)  # admin/manager/viewer
