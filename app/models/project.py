@@ -6,36 +6,37 @@ class Project(db.Model):
     __tablename__ = 'projects'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    # UPDATED: ForeignKey now points to the 'admins' table.
-    client_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=False)
     name = db.Column(db.String(255), nullable=False)
     status = db.Column(db.String(20), default='active')
     project_type = db.Column(db.String(100))
     description = db.Column(db.Text)
     start_date = db.Column(db.Date)
     end_date = db.Column(db.Date)
+    project_value = db.Column(db.Numeric(12, 2))
+    billing_frequency = db.Column(db.String(20), default='milestone')
+    hourly_budget = db.Column(db.Numeric(8, 2))
+    hours_used = db.Column(db.Numeric(8, 2), default=0)
+    budget_spent = db.Column(db.Numeric(12, 2), default=0)
+    admin_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=True) 
+    tier1_seller_id = db.Column(db.String(36), db.ForeignKey('tier1_sellers.id'), nullable=True)
+    tier2_seller_id = db.Column(db.String(36), db.ForeignKey('tier2_sellers.id'), nullable=True)
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    project_value = db.Column(db.Numeric(12, 2))  # Total project value
-    billing_frequency = db.Column(db.String(20), default='milestone')  # monthly, milestone, completion
-    hourly_budget = db.Column(db.Numeric(8, 2))  # Total hours budgeted
-    hours_used = db.Column(db.Numeric(8, 2), default=0)  # Hours consumed
-    budget_spent = db.Column(db.Numeric(12, 2), default=0)  # Amount already billed
-    
-    # Relationships
-    reports = db.relationship('Report', backref='project', lazy=True)
 
-class User(db.Model):
-    __tablename__ = 'users'
+    # Relationships
+    clients = db.relationship('Client', backref='project', lazy=True)
+
+
+
+class Client(db.Model):
+    __tablename__ = 'clients'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    # UPDATED: ForeignKey now points to the 'admins' table.
-    client_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=False)
-    email = db.Column(db.String(255), unique=True, nullable=False)
+    project_id = db.Column(db.String(36), db.ForeignKey('projects.id'), nullable=False)
+    admin_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=True)
     name = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(50), nullable=False)  # admin/manager/viewer
-    status = db.Column(db.String(20), default='active')
-    password_hash = db.Column(db.String(255))
-    last_login = db.Column(db.DateTime)
+    company = db.Column(db.String(255))  # optional
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+

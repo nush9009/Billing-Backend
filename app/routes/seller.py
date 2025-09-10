@@ -7,21 +7,36 @@ from datetime import datetime
 seller_bp = Blueprint('seller', __name__)
 
 # ------------------ HELPER ------------------
+def get_current_user(user_id):
+    admin = Admin.query.get(user_id)
+    if admin:
+        return {"id": admin.id, "role": "admin"}
+
+    tier1 = Tier1Seller.query.get(user_id)
+    if tier1:
+        return {"id": tier1.id, "role": "tier1_seller"}
+
+    tier2 = Tier2Seller.query.get(user_id)
+    if tier2:
+        return {"id": tier2.id, "role": "tier2_seller"}
+
+    return None
+
 def is_admin(user):
-    return user.get('role') == 'admin'
+    return user and user.get('role') == 'admin'
 
 def is_tier1(user):
-    return user.get('role') == 'tier1_seller'
+    return user and user.get('role') == 'tier1_seller'
 
 def is_tier2(user):
-    return user.get('role') == 'tier2_seller'
+    return user and user.get('role') == 'tier2_seller'
 
 
 # ------------------ CREATE TIER1 SELLER ------------------
 @seller_bp.route('/tier1', methods=['POST'])
 @jwt_required()
 def create_tier1():
-    current_user = get_jwt_identity()
+    current_user = get_current_user(get_jwt_identity())
     if not is_admin(current_user):
         return jsonify({'message': 'Only admins can create Tier1 sellers'}), 403
 
@@ -68,7 +83,7 @@ def get_tier1_seller(seller_id):
 @seller_bp.route('/tier1/<seller_id>', methods=['PUT'])
 @jwt_required()
 def update_tier1(seller_id):
-    current_user = get_jwt_identity()
+    current_user = get_current_user(get_jwt_identity())
     if not is_admin(current_user):
         return jsonify({'message': 'Only admins can update Tier1 sellers'}), 403
 
@@ -88,7 +103,7 @@ def update_tier1(seller_id):
 @seller_bp.route('/tier1/<seller_id>', methods=['DELETE'])
 @jwt_required()
 def delete_tier1(seller_id):
-    current_user = get_jwt_identity()
+    current_user = get_current_user(get_jwt_identity())
     if not is_admin(current_user):
         return jsonify({'message': 'Only admins can delete Tier1 sellers'}), 403
 
@@ -107,11 +122,9 @@ def delete_tier1(seller_id):
 
 # ------------------ CREATE TIER2 SELLER ------------------
 @seller_bp.route('/tier2', methods=['POST'])
-# ------------------ CREATE TIER2 SELLER ------------------
-@seller_bp.route('/tier2', methods=['POST'])
 @jwt_required()
 def create_tier2():
-    current_user = get_jwt_identity()
+    current_user = get_current_user(get_jwt_identity())
 
     data = request.get_json()
     if not data or not data.get('name') or not data.get('admin_email'):
@@ -141,12 +154,11 @@ def create_tier2():
     return jsonify({'message': 'Tier2 seller created successfully', 'id': new_tier2.id}), 201
 
 
-
 # ------------------ GET ALL TIER2 SELLERS ------------------
 @seller_bp.route('/tier2', methods=['GET'])
 @jwt_required()
 def get_tier2_sellers():
-    current_user = get_jwt_identity()
+    current_user = get_current_user(get_jwt_identity())
 
     if is_tier1(current_user):
         sellers = Tier2Seller.query.filter_by(tier1_seller_id=current_user['id']).all()
@@ -163,11 +175,10 @@ def get_tier2_sellers():
 
 
 # ------------------ GET SINGLE TIER2 SELLER ------------------
-
 @seller_bp.route('/tier2/<seller_id>', methods=['GET'])
 @jwt_required()
 def get_tier2_seller(seller_id):
-    current_user = get_jwt_identity()
+    current_user = get_current_user(get_jwt_identity())
     seller = Tier2Seller.query.get(seller_id)
     if not seller:
         return jsonify({'message': 'Tier2 seller not found'}), 404
@@ -184,12 +195,11 @@ def get_tier2_seller(seller_id):
     }), 200
 
 
-
 # ------------------ UPDATE TIER2 SELLER ------------------
 @seller_bp.route('/tier2/<seller_id>', methods=['PUT'])
 @jwt_required()
 def update_tier2(seller_id):
-    current_user = get_jwt_identity()
+    current_user = get_current_user(get_jwt_identity())
     seller = Tier2Seller.query.get(seller_id)
 
     if not seller:
@@ -210,7 +220,7 @@ def update_tier2(seller_id):
 @seller_bp.route('/tier2/<seller_id>', methods=['DELETE'])
 @jwt_required()
 def delete_tier2(seller_id):
-    current_user = get_jwt_identity()
+    current_user = get_current_user(get_jwt_identity())
     seller = Tier2Seller.query.get(seller_id)
 
     if not seller:

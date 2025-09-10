@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import (
     create_access_token, jwt_required, get_jwt_identity,
-    create_refresh_token
+    create_refresh_token, get_jwt
 )
 from app import db, bcrypt
 from app.models import Tier1Seller, Tier2Seller, Admin
@@ -86,7 +86,7 @@ def login():
     data = request.get_json()
     if not data:
         return jsonify({'message': 'Request body must be JSON'}), 400
-        
+
     email = data.get('email')
     password = data.get('password')
     user_type = data.get('user_type')
@@ -102,7 +102,7 @@ def login():
             user = Admin.query.filter_by(email=email).first()
             if user and bcrypt.check_password_hash(user.password_hash, password):
                 user_identity = {
-                    'id': user.id,
+                    'id': str(user.id),
                     'role': 'admin',
                     'email': user.email,
                     'name': user.name
@@ -112,7 +112,7 @@ def login():
             user = Tier1Seller.query.filter_by(admin_email=email).first()
             if user and bcrypt.check_password_hash(user.password_hash, password):
                 user_identity = {
-                    'id': user.id,
+                    'id': str(user.id),
                     'role': 'tier1_seller',
                     'email': user.admin_email,
                     'name': user.name
@@ -122,15 +122,31 @@ def login():
             user = Tier2Seller.query.filter_by(admin_email=email).first()
             if user and bcrypt.check_password_hash(user.password_hash, password):
                 user_identity = {
-                    'id': user.id,
+                    'id': str(user.id),
                     'role': 'tier2_seller',
                     'email': user.admin_email,
                     'name': user.name
                 }
 
         if user and user_identity:
-            access_token = create_access_token(identity=user_identity, expires_delta=timedelta(hours=1))
-            refresh_token = create_refresh_token(identity=user_identity)
+            # ✅ identity must be string
+            access_token = create_access_token(
+                identity=user_identity["id"],
+                additional_claims={
+                    "role": user_identity["role"],
+                    "email": user_identity["email"],
+                    "name": user_identity["name"]
+                },
+                expires_delta=timedelta(hours=1)
+            )
+            refresh_token = create_refresh_token(
+                identity=user_identity["id"],
+                additional_claims={
+                    "role": user_identity["role"],
+                    "email": user_identity["email"],
+                    "name": user_identity["name"]
+                }
+            )
             return jsonify({
                 'message': 'Login successful',
                 'access_token': access_token,
@@ -148,16 +164,31 @@ def login():
 @auth_bp.route('/profile', methods=['GET'])
 @jwt_required()
 def get_profile():
-    current_user = get_jwt_identity()
-    return jsonify({'profile': current_user}), 200
+    user_id = get_jwt_identity()
+    claims = get_jwt()
+    return jsonify({
+        'id': user_id,
+        'role': claims.get("role"),
+        'email': claims.get("email"),
+        'name': claims.get("name")
+    }), 200
 
 
 # ------------------ REFRESH TOKEN ------------------
 @auth_bp.route('/refresh', methods=['POST'])
 @jwt_required(refresh=True)
 def refresh_token():
-    current_user = get_jwt_identity()
-    new_access = create_access_token(identity=current_user, expires_delta=timedelta(hours=1))
+    user_id = get_jwt_identity()
+    claims = get_jwt()
+    new_access = create_access_token(
+        identity=user_id,
+        additional_claims={
+            "role": claims.get("role"),
+            "email": claims.get("email"),
+            "name": claims.get("name")
+        },
+        expires_delta=timedelta(hours=1)
+    )
     return jsonify({'access_token': new_access}), 200
 
 
@@ -166,3 +197,51 @@ def refresh_token():
 @jwt_required()
 def logout():
     return jsonify({'message': 'Logout successful'}), 200
+
+
+# ------------------ GET ALL USERS ------------------
+@auth_bp.route('/users', methods=['GET'])
+@jwt_required()
+def get_all_users():
+    claims = get_jwt()
+
+    # ✅ Only allow admin to view all users
+    if claims.get("role") != "admin":
+        return jsonify({'message': 'Only admins can view all users'}), 403
+
+    try:
+        admins = Admin.query.all()
+        tier1_sellers = Tier1Seller.query.all()
+        tier2_sellers = Tier2Seller.query.all()
+
+        users = {
+            "admins": [
+                {
+                    "id": str(a.id),
+                    "name": a.name,
+                    "email": a.email
+                } for a in admins
+            ],
+            "tier1_sellers": [
+                {
+                    "id": str(t1.id),
+                    "name": t1.name,
+                    "admin_email": t1.admin_email,
+                    "subdomain": t1.subdomain
+                } for t1 in tier1_sellers
+            ],
+            "tier2_sellers": [
+                {
+                    "id": str(t2.id),
+                    "name": t2.name,
+                    "admin_email": t2.admin_email,
+                    "tier1_seller_id": str(t2.tier1_seller_id),
+                    "subdomain": t2.subdomain
+                } for t2 in tier2_sellers
+            ]
+        }
+
+        return jsonify(users), 200
+
+    except Exception as e:
+        return jsonify({'message': f'Error: {str(e)}'}), 500

@@ -25,6 +25,5 @@ class Admin(db.Model):
     # Relationships
     # UPDATED: The back-references are updated to reflect the new class name 'Admin'.
     projects = db.relationship('Project', backref='admin', lazy=True)
-    users = db.relationship('User', backref='admin', lazy=True)
-    commissions = db.relationship('Commission', backref='admin', lazy=True)
-    reports = db.relationship('Report', backref='admin', lazy=True)
+    clients= db.relationship('Client', backref='admin', lazy=True)
+    

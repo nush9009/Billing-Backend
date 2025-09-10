@@ -1,15 +1,15 @@
 from app import db
-from datetime import datetime, date
+from datetime import datetime, timedelta
 import uuid
 from decimal import Decimal
-from sqlalchemy import func
+from app.models import Project
 
+# -------------------- PROJECT PRICING --------------------
 class ProjectPricing(db.Model):
     """Pricing structure for different project types"""
     __tablename__ = 'project_pricing'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    # UPDATED: ForeignKey now points to the 'tier1_sellers' table.
     seller_id = db.Column(db.String(36), db.ForeignKey('tier1_sellers.id'))
     tier2_seller_id = db.Column(db.String(36), db.ForeignKey('tier2_sellers.id'))
     project_type = db.Column(db.String(100), nullable=False)  # Market Research, Strategy, etc.
@@ -21,7 +21,11 @@ class ProjectPricing(db.Model):
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    billing_records = db.relationship('ProjectBilling', backref='pricing', lazy=True)
 
+
+# -------------------- PROJECT BILLING --------------------
 class ProjectBilling(db.Model):
     """Billing records for individual projects"""
     __tablename__ = 'project_billing'
@@ -30,13 +34,11 @@ class ProjectBilling(db.Model):
     project_id = db.Column(db.String(36), db.ForeignKey('projects.id'), nullable=False)
     pricing_id = db.Column(db.String(36), db.ForeignKey('project_pricing.id'))
     
-    # Billing details
     billing_type = db.Column(db.String(50), nullable=False)  # setup, monthly, milestone, completion
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     hours_worked = db.Column(db.Numeric(8, 2))  # For hourly billing
     milestone_description = db.Column(db.Text)
     
-    # Status and dates
     status = db.Column(db.String(20), default='pending')  # pending, invoiced, paid, cancelled
     due_date = db.Column(db.Date)
     invoice_date = db.Column(db.Date)
@@ -45,37 +47,33 @@ class ProjectBilling(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relationships
     project = db.relationship('Project', backref='billing_records', lazy=True)
-    pricing = db.relationship('ProjectPricing', backref='billing_records', lazy=True)
+    invoice = db.relationship('Invoice', back_populates='billing', uselist=False)
 
+
+# -------------------- INVOICE --------------------
 class Invoice(db.Model):
-    """Invoice generation for clients"""
     __tablename__ = 'invoices'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    # UPDATED: ForeignKey now points to the 'admins' table.
-    client_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=False)
+    billing_id = db.Column(db.String(36), db.ForeignKey('project_billing.id'), nullable=True, unique=True)
+
     invoice_number = db.Column(db.String(50), unique=True, nullable=False)
-    
-    # Invoice totals
     subtotal = db.Column(db.Numeric(12, 2), nullable=False)
     tax_amount = db.Column(db.Numeric(12, 2), default=0)
     total_amount = db.Column(db.Numeric(12, 2), nullable=False)
     
-    # Status and dates
     status = db.Column(db.String(20), default='draft')  # draft, sent, paid, overdue, cancelled
     issue_date = db.Column(db.Date, nullable=False)
     due_date = db.Column(db.Date, nullable=False)
     paid_date = db.Column(db.Date)
     
-    # Invoice details
-    invoice_data = db.Column(db.JSON)  # Detailed line items
+    invoice_data = db.Column(db.JSON)
     notes = db.Column(db.Text)
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relationships
-    # UPDATED: backref is updated to reflect the new Admin model name.
-    client = db.relationship('Admin', backref='invoices', lazy=True)
+    billing = db.relationship('ProjectBilling', back_populates='invoice')
+
+

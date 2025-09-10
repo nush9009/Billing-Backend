@@ -41,6 +41,7 @@ class Tier2Seller(db.Model):
     commission_type = db.Column(db.String(50))
     commission_value = db.Column(db.Numeric(10, 2))
     deleted_at = db.Column(db.DateTime)
+    status = db.Column(db.String(20), default='active')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

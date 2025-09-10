@@ -31,7 +31,7 @@ def create_app():
     ma.init_app(app)
     
     # UPDATED: Import the renamed models
-    from app.models import Tier1Seller, Tier2Seller, Admin, Project, User, Commission, Report
+    from app.models import Tier1Seller, Tier2Seller, Admin, Project, Client
     
     # Initialize database automatically on first run
     with app.app_context():
@@ -48,18 +48,13 @@ def create_app():
     # Register blueprints
     from app.routes.auth import auth_bp
     from app.routes.seller import seller_bp
-    from app.routes.client import client_bp
     from app.routes.admin import admin_bp
-    from app.routes.company import company_bp
     from app.routes.projects import projects_bp
     from app.routes.billing import billing_bp
 
-
-    app.register_blueprint(company_bp, url_prefix='/api/company')
     app.register_blueprint(projects_bp, url_prefix='/api/projects')
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(seller_bp, url_prefix='/api/seller')
-    app.register_blueprint(client_bp, url_prefix='/api/client')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
     app.register_blueprint(billing_bp, url_prefix='/api/billing')
     

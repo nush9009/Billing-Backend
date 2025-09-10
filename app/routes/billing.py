@@ -12,7 +12,7 @@ billing_bp = Blueprint('billing', __name__)
 @billing_bp.route('/create', methods=['POST'])
 @jwt_required_custom
 def create_billing_record():
-    """Creates a new billing record for a project."""
+    """Create a new billing record for a project."""
     data = request.get_json()
     try:
         project = Project.query.get(data.get('project_id'))
@@ -31,7 +31,13 @@ def create_billing_record():
         db.session.add(new_record)
 
         # Update project's budget spent
-        project.budget_spent = (project.budget_spent or 0) + float(new_record.amount)
+        from decimal import Decimal
+
+        project.budget_spent = (project.budget_spent or Decimal('0')) + Decimal(new_record.amount)
+        if new_record.hours_worked:
+            project.hours_used = (project.hours_used or Decimal('0')) + Decimal(new_record.hours_worked)
+
+
         db.session.commit()
 
         return jsonify({
@@ -41,6 +47,7 @@ def create_billing_record():
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': f'Error: {str(e)}'}), 400
+
 
 # ---------------- GET PROJECT BILLING ----------------
 @billing_bp.route('/project/<project_id>', methods=['GET'])
@@ -77,25 +84,19 @@ def get_project_billing(project_id):
     }
     return jsonify(summary), 200
 
-# ---------------- GENERATE INVOICE ----------------
+
 @billing_bp.route('/invoice/generate', methods=['POST'])
 @jwt_required_custom
 def generate_invoice():
-    """Generate an invoice for a client from pending billing records."""
+    """Generate an invoice from pending billing records for a project."""
     data = request.get_json()
-    admin_id = data.get('client_id')
-    billing_record_ids = data.get('billing_records_ids')
-
-    if not admin_id or not billing_record_ids:
-        return jsonify({'message': 'Admin ID and billing record IDs are required'}), 400
-
-    admin = Admin.query.get(admin_id)
-    if not admin:
-        return jsonify({'message': 'Admin not found'}), 404
+    billing_record_ids = data.get('billing_record_ids')
+    if not billing_record_ids:
+        return jsonify({'message': 'Billing record IDs are required'}), 400
 
     try:
-        records_to_invoice = db.session.query(ProjectBilling).join(Project).filter(
-            Project.client_id == admin_id,
+        # Get pending billing records
+        records_to_invoice = ProjectBilling.query.filter(
             ProjectBilling.id.in_(billing_record_ids),
             ProjectBilling.status == 'pending'
         ).all()
@@ -104,11 +105,10 @@ def generate_invoice():
             return jsonify({'message': 'No pending billing records found'}), 404
 
         subtotal = sum(float(r.amount) for r in records_to_invoice)
-        tax = subtotal * 0.10
+        tax = subtotal * 0.10  # 10% tax
         total = subtotal + tax
 
         new_invoice = Invoice(
-            client_id=admin_id,
             invoice_number=f"INV-{uuid.uuid4().hex[:6].upper()}",
             subtotal=subtotal,
             tax_amount=tax,
@@ -141,6 +141,8 @@ def generate_invoice():
         db.session.rollback()
         return jsonify({'message': f'Error: {str(e)}'}), 400
 
+
+
 # ---------------- GET INVOICE BY ID ----------------
 @billing_bp.route('/invoice/<invoice_id>', methods=['GET'])
 @jwt_required_custom
@@ -164,6 +166,7 @@ def get_invoice(invoice_id):
     }
     return jsonify(data), 200
 
+
 # ---------------- LIST ALL INVOICES FOR A CLIENT ----------------
 @billing_bp.route('/invoices/client/<client_id>', methods=['GET'])
 @jwt_required_custom
@@ -180,6 +183,7 @@ def list_invoices(client_id):
         } for inv in invoices
     ]), 200
 
+
 # ---------------- MARK INVOICE AS PAID ----------------
 @billing_bp.route('/invoice/<invoice_id>/pay', methods=['POST'])
 @jwt_required_custom
@@ -194,8 +198,8 @@ def mark_invoice_paid(invoice_id):
     invoice.paid_date = date.today()
 
     # Update related billing records
-    for billing in invoice.invoice_data:
-        record = ProjectBilling.query.get(billing['billing_id'])
+    for billing_item in invoice.invoice_data:
+        record = ProjectBilling.query.get(billing_item['billing_id'])
         if record:
             record.status = 'paid'
             record.paid_date = date.today()
