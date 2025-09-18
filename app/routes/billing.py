@@ -1,208 +1,295 @@
+# billing_routes.py (API Endpoints)
+
 from flask import Blueprint, request, jsonify
 from app import db
 from app.utils.auth import jwt_required_custom
-from app.models import Project, Admin
+from app.models import Project, Client
 from app.models.billing import ProjectBilling, Invoice
 from datetime import date, timedelta
 import uuid
+from decimal import Decimal
+from app.routes.projects import get_current_user,get_jwt_identity,is_admin,is_tier1,is_tier2
 
 billing_bp = Blueprint('billing', __name__)
 
-# ---------------- CREATE BILLING RECORD ----------------
-@billing_bp.route('/create', methods=['POST'])
+# ---------------- CREATE A BILL ----------------
+@billing_bp.route('/bill/create', methods=['POST'])
 @jwt_required_custom
-def create_billing_record():
-    """Create a new billing record for a project."""
+def create_bill():
+    """Create a new bill (ProjectBilling record) for a project."""
     data = request.get_json()
-    try:
-        project = Project.query.get(data.get('project_id'))
-        if not project:
-            return jsonify({'message': 'Project not found'}), 404
-
-        new_record = ProjectBilling(
-            project_id=project.id,
-            billing_type=data.get('billing_type'),
-            amount=data.get('amount', 0),
-            hours_worked=data.get('hours_worked', 0),
-            milestone_description=data.get('milestone_description'),
-            status='pending',
-            due_date=data.get('due_date', date.today())
-        )
-        db.session.add(new_record)
-
-        # Update project's budget spent
-        from decimal import Decimal
-
-        project.budget_spent = (project.budget_spent or Decimal('0')) + Decimal(new_record.amount)
-        if new_record.hours_worked:
-            project.hours_used = (project.hours_used or Decimal('0')) + Decimal(new_record.hours_worked)
-
-
-        db.session.commit()
-
-        return jsonify({
-            'message': 'Billing record created successfully',
-            'record_id': new_record.id
-        }), 201
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({'message': f'Error: {str(e)}'}), 400
-
-
-# ---------------- GET PROJECT BILLING ----------------
-@billing_bp.route('/project/<project_id>', methods=['GET'])
-@jwt_required_custom
-def get_project_billing(project_id):
-    """Get all billing records and summary for a project."""
+    project_id = data.get('project_id')
+    
     project = Project.query.get(project_id)
     if not project:
         return jsonify({'message': 'Project not found'}), 404
 
-    records = project.billing_records
-    total_billed = sum(float(r.amount) for r in records)
-    total_paid = sum(float(r.amount) for r in records if r.status == 'paid')
+    new_bill = ProjectBilling(
+        project_id=project.id,
+        billing_type=data.get('billing_type', 'General'),
+        amount=Decimal(data.get('amount', 0)),
+        description=data.get('description'),
+        status='pending', # Starts as pending
+        due_date=data.get('due_date')
+    )
+    db.session.add(new_bill)
+    db.session.commit()
 
-    summary = {
-        'project_id': project.id,
-        'project_name': project.name,
-        'project_value': float(project.project_value or 0),
-        'total_billed': total_billed,
-        'total_paid': total_paid,
-        'amount_due': total_billed - total_paid,
-        'records': [
-            {
-                'id': r.id,
-                'type': r.billing_type,
-                'amount': float(r.amount),
-                'status': r.status,
-                'description': r.milestone_description,
-                'due_date': r.due_date.isoformat() if r.due_date else None,
-                'invoice_date': r.invoice_date.isoformat() if r.invoice_date else None,
-                'paid_date': r.paid_date.isoformat() if r.paid_date else None
-            } for r in records
-        ]
-    }
-    return jsonify(summary), 200
+    return jsonify({
+        'message': 'Bill created successfully. Ready to be invoiced.',
+        'bill_id': new_bill.id
+    }), 201
 
+# ---------------- GENERATE INVOICE FROM A BILL ----------------
+# billing_routes.py (API Endpoint)
 
 @billing_bp.route('/invoice/generate', methods=['POST'])
 @jwt_required_custom
-def generate_invoice():
-    """Generate an invoice from pending billing records for a project."""
+def generate_invoice_from_bill():
+    """Generate a single invoice from a single pending bill."""
     data = request.get_json()
-    billing_record_ids = data.get('billing_record_ids')
-    if not billing_record_ids:
-        return jsonify({'message': 'Billing record IDs are required'}), 400
+    bill_id = data.get('bill_id')
+    if not bill_id:
+        return jsonify({'message': 'bill_id is required'}), 400
+
+    bill = ProjectBilling.query.get(bill_id)
+    if not bill:
+        return jsonify({'message': 'Bill not found'}), 404
+    if bill.status != 'pending':
+        return jsonify({'message': f'Bill is not pending. Current status: {bill.status}'}), 400
+
+    # REMOVED: Logic to find the client is no longer necessary.
+    # The invoice is strictly tied to the project.
 
     try:
-        # Get pending billing records
-        records_to_invoice = ProjectBilling.query.filter(
-            ProjectBilling.id.in_(billing_record_ids),
-            ProjectBilling.status == 'pending'
-        ).all()
-
-        if not records_to_invoice:
-            return jsonify({'message': 'No pending billing records found'}), 404
-
-        subtotal = sum(float(r.amount) for r in records_to_invoice)
-        tax = subtotal * 0.10  # 10% tax
-        total = subtotal + tax
-
         new_invoice = Invoice(
+            billing_record_id=bill.id,
+            project_id=bill.project_id, # Link directly to the project
             invoice_number=f"INV-{uuid.uuid4().hex[:6].upper()}",
-            subtotal=subtotal,
-            tax_amount=tax,
-            total_amount=total,
+            total_amount=bill.amount,
             issue_date=date.today(),
-            due_date=date.today() + timedelta(days=30),
-            status='sent',
-            invoice_data=[{
-                'billing_id': r.id,
-                'project_id': r.project_id,
-                'amount': float(r.amount),
-                'type': r.billing_type,
-                'description': r.milestone_description
-            } for r in records_to_invoice]
+            due_date=bill.due_date or (date.today() + timedelta(days=30)),
+            status='sent'
         )
+        
+        bill.status = 'invoiced'
+        
         db.session.add(new_invoice)
-
-        # Update billing records to 'invoiced'
-        for record in records_to_invoice:
-            record.status = 'invoiced'
-            record.invoice_date = date.today()
-
         db.session.commit()
+        
         return jsonify({
             'message': 'Invoice generated successfully',
-            'invoice_number': new_invoice.invoice_number,
-            'total_amount': float(new_invoice.total_amount)
+            'invoice_id': new_invoice.id,
+            'invoice_number': new_invoice.invoice_number
         }), 201
     except Exception as e:
         db.session.rollback()
-        return jsonify({'message': f'Error: {str(e)}'}), 400
-
-
-
-# ---------------- GET INVOICE BY ID ----------------
-@billing_bp.route('/invoice/<invoice_id>', methods=['GET'])
-@jwt_required_custom
-def get_invoice(invoice_id):
-    invoice = Invoice.query.get(invoice_id)
-    if not invoice:
-        return jsonify({'message': 'Invoice not found'}), 404
-
-    data = {
-        'id': invoice.id,
-        'invoice_number': invoice.invoice_number,
-        'client_id': invoice.client_id,
-        'subtotal': float(invoice.subtotal),
-        'tax_amount': float(invoice.tax_amount),
-        'total_amount': float(invoice.total_amount),
-        'status': invoice.status,
-        'issue_date': invoice.issue_date.isoformat(),
-        'due_date': invoice.due_date.isoformat(),
-        'paid_date': invoice.paid_date.isoformat() if invoice.paid_date else None,
-        'line_items': invoice.invoice_data
-    }
-    return jsonify(data), 200
-
-
-# ---------------- LIST ALL INVOICES FOR A CLIENT ----------------
-@billing_bp.route('/invoices/client/<client_id>', methods=['GET'])
-@jwt_required_custom
-def list_invoices(client_id):
-    invoices = Invoice.query.filter_by(client_id=client_id).all()
-    return jsonify([
-        {
-            'id': inv.id,
-            'invoice_number': inv.invoice_number,
-            'status': inv.status,
-            'total_amount': float(inv.total_amount),
-            'issue_date': inv.issue_date.isoformat(),
-            'due_date': inv.due_date.isoformat()
-        } for inv in invoices
-    ]), 200
-
+        return jsonify({'message': f'Error: {str(e)}'}), 500
 
 # ---------------- MARK INVOICE AS PAID ----------------
-@billing_bp.route('/invoice/<invoice_id>/pay', methods=['POST'])
+@billing_bp.route('/invoice/<invoice_id>/mark_paid', methods=['POST'])
 @jwt_required_custom
 def mark_invoice_paid(invoice_id):
+    """Mark an invoice and its associated bill as paid."""
     invoice = Invoice.query.get(invoice_id)
     if not invoice:
         return jsonify({'message': 'Invoice not found'}), 404
     if invoice.status == 'paid':
-        return jsonify({'message': 'Invoice already paid'}), 400
+        return jsonify({'message': 'Invoice is already marked as paid'}), 400
 
+    # Update invoice status
     invoice.status = 'paid'
     invoice.paid_date = date.today()
 
-    # Update related billing records
-    for billing_item in invoice.invoice_data:
-        record = ProjectBilling.query.get(billing_item['billing_id'])
-        if record:
-            record.status = 'paid'
-            record.paid_date = date.today()
+    # Update the original bill's status via the relationship
+    if invoice.billing_record:
+        invoice.billing_record.status = 'paid'
 
     db.session.commit()
-    return jsonify({'message': 'Invoice marked as paid'}), 200
+    return jsonify({'message': f'Invoice {invoice.invoice_number} marked as paid.'}), 200
+
+# ---------------- GET ALL BILLS FOR A PROJECT (PAID/UNPAID VIEW) ----------------
+@billing_bp.route('/project/<project_id>/bills', methods=['GET'])
+@jwt_required_custom
+def get_project_bills(project_id):
+    """Get all billing records for a project, showing paid/unpaid status."""
+    project = Project.query.get(project_id)
+    if not project:
+        return jsonify({'message': 'Project not found'}), 404
+    
+    bills = ProjectBilling.query.filter_by(project_id=project_id).order_by(ProjectBilling.created_at.desc()).all()
+    
+    return jsonify([
+        {
+            'bill_id': bill.id,
+            'amount': float(bill.amount),
+            'description': bill.description,
+            'status': bill.status, # This is the key field for paid/unpaid status
+            'due_date': bill.due_date.isoformat() if bill.due_date else None,
+            'invoice_id': bill.invoice.id if bill.invoice else None
+        } for bill in bills
+    ]), 200
+
+
+# @billing_bp.route('/revenue', methods=['GET'])
+# @jwt_required_custom
+# def revenue_overview():
+#     """Get overall revenue stats + billing details for dashboard."""
+#     from app.models import Client, Tier1Seller, Tier2Seller  # make sure they exist
+
+#     bills = ProjectBilling.query.join(Project).all()
+
+#     total_bills = len(bills)
+#     total_value = sum(float(b.amount) for b in bills)
+
+#     paid_bills = [b for b in bills if b.status == 'paid']
+#     pending_bills = [b for b in bills if b.status in ['pending', 'invoiced']]
+#     overdue_bills = [
+#         b for b in bills if b.status in ['pending', 'invoiced'] and b.due_date and b.due_date < date.today()
+#     ]
+
+#     summary = {
+#         "total_bills": total_bills,
+#         "total_value": total_value,
+#         "paid_bills": len(paid_bills),
+#         "collected_amount": sum(float(b.amount) for b in paid_bills),
+#         "pending_bills": len(pending_bills),
+#         "outstanding_amount": sum(float(b.amount) for b in pending_bills),
+#         "overdue_bills": len(overdue_bills)
+#     }
+
+#     details = []
+#     for bill in bills:
+#         # client_name = None
+#         # tier = None
+
+#         # # resolve client & tier
+#         # if bill.project and bill.project.name:
+#         #     client_name = bill.project.name
+#         # if bill.project and bill.project.tier1_seller_id:
+#         #     tier = "Tier-1"
+#         # elif bill.project and bill.project.tier2_seller_id:
+#         #     tier = "Tier-2"
+#         client_name = bill.project.name if bill.project and bill.project.name else "Unknown"
+#         tier = "Tier-2" if bill.project and bill.project.tier2_seller_id else ("Tier-1" if bill.project and bill.project.tier1_seller_id else None)
+
+#         details.append({
+#             "client_name": client_name or "Unknown",
+#             "invoice_id": bill.invoice.invoice_number if bill.invoice else None,
+#             "bill_amount": float(bill.amount),
+#             "due_date": bill.due_date.isoformat() if bill.due_date else None,
+#             "status": (
+#                 "Overdue" if bill.status in ["pending", "invoiced"] and bill.due_date and bill.due_date < date.today()
+#                 else bill.status.capitalize()
+#             ),
+#             "payment_date": bill.invoice.paid_date.isoformat() if (bill.invoice and bill.invoice.paid_date) else None,
+#             "tier": tier
+#         })
+
+#     return jsonify({
+#         "summary": summary,
+#         "billing_details": details
+#     }), 200
+
+
+# billing_routes.py
+
+# ... (other imports remain the same)
+from sqlalchemy import or_ # <-- 
+
+# ... (all other routes remain the same) ...
+
+
+@billing_bp.route('/revenue', methods=['GET'])
+@jwt_required_custom
+def revenue_overview():
+    """
+    Get overall revenue stats + billing details for the dashboard,
+    filtered by the current user's role and permissions.
+    """
+    # --- MODIFICATION START ---
+
+    # 1. Get the current user's identity and role
+    user_id = get_jwt_identity()
+    current_user = get_current_user(user_id)
+    if not current_user:
+        return jsonify({'message': 'User not found or invalid token'}), 401
+
+    # Import models here as in the original code
+    from app.models import Admin, Tier1Seller, Tier2Seller
+
+    # 2. Build the base query to join ProjectBilling with Project
+    base_query = ProjectBilling.query.join(Project, ProjectBilling.project_id == Project.id)
+
+    # 3. Apply role-based filtering to the query
+    if is_admin(current_user):
+        # Admin sees everything, no additional filters needed.
+        bills = base_query.all()
+    
+    elif is_tier1(current_user):
+        # Tier 1 Seller sees their own projects AND projects of Tier 2 sellers they manage.
+        
+        # Get IDs of all Tier 2 sellers managed by this Tier 1 seller
+        managed_tier2_ids = [
+            seller.id for seller in Tier2Seller.query.filter_by(tier1_seller_id=current_user['id']).all()
+        ]
+        
+        bills = base_query.filter(
+            or_(
+                Project.tier1_seller_id == current_user['id'],
+                Project.tier2_seller_id.in_(managed_tier2_ids)
+            )
+        ).all()
+
+    elif is_tier2(current_user):
+        # Tier 2 Seller sees only their own projects.
+        bills = base_query.filter(Project.tier2_seller_id == current_user['id']).all()
+    
+    else:
+        # If user has no recognizable role, return no bills.
+        bills = []
+        
+    # --- MODIFICATION END ---
+
+    # The rest of the function processes the filtered `bills` list
+    total_bills = len(bills)
+    total_value = sum(float(b.amount) for b in bills)
+
+    paid_bills = [b for b in bills if b.status == 'paid']
+    pending_bills = [b for b in bills if b.status in ['pending', 'invoiced']]
+    overdue_bills = [
+        b for b in bills if b.status in ['pending', 'invoiced'] and b.due_date and b.due_date < date.today()
+    ]
+
+    summary = {
+        "total_bills": total_bills,
+        "total_value": total_value,
+        "paid_bills": len(paid_bills),
+        "collected_amount": sum(float(b.amount) for b in paid_bills),
+        "pending_bills": len(pending_bills),
+        "outstanding_amount": sum(float(b.amount) for b in pending_bills),
+        "overdue_bills": len(overdue_bills)
+    }
+
+    details = []
+    for bill in bills:
+        client_name = bill.project.name if bill.project and bill.project.name else "Unknown"
+        tier = "Tier-2" if bill.project and bill.project.tier2_seller_id else ("Tier-1" if bill.project and bill.project.tier1_seller_id else None)
+
+        details.append({
+            "client_name": client_name or "Unknown",
+            "invoice_id": bill.invoice.invoice_number if bill.invoice else None,
+            "bill_amount": float(bill.amount),
+            "due_date": bill.due_date.isoformat() if bill.due_date else None,
+            "status": (
+                "Overdue" if bill.status in ["pending", "invoiced"] and bill.due_date and bill.due_date < date.today()
+                else bill.status.capitalize()
+            ),
+            "payment_date": bill.invoice.paid_date.isoformat() if (bill.invoice and bill.invoice.paid_date) else None,
+            "tier": tier
+        })
+
+    return jsonify({
+        "summary": summary,
+        "billing_details": details
+    }), 200

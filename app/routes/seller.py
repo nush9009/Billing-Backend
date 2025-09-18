@@ -1,7 +1,8 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app import db
-from app.models import Tier1Seller, Tier2Seller, Admin
+from app.models import Tier1Seller, Tier2Seller, Admin,Project,Client
+from app.models.billing import ProjectBilling
 from datetime import datetime
 
 seller_bp = Blueprint('seller', __name__)
@@ -57,15 +58,91 @@ def create_tier1():
 
 
 # ------------------ GET ALL TIER1 SELLERS ------------------
+# ------------------ GET ALL TIER1 SELLERS ------------------
+from sqlalchemy import func
+
+# ------------------ GET ALL TIER1 SELLERS ------------------
 @seller_bp.route('/tier1', methods=['GET'])
 @jwt_required()
 def get_tier1_sellers():
     sellers = Tier1Seller.query.all()
-    result = [
-        {'id': s.id, 'name': s.name, 'admin_email': s.admin_email, 'subdomain': s.subdomain}
-        for s in sellers
-    ]
+
+    result = []
+    for s in sellers:
+        # Count projects under this Tier1 seller (client_count means project_count here)
+        client_count = (
+            db.session.query(Project)
+            .filter(Project.tier1_seller_id == s.id)
+            .count()
+        )
+
+        # Revenue = sum of all paid bills of projects under this Tier1 seller
+        revenue = (
+            db.session.query(func.coalesce(func.sum(ProjectBilling.amount), 0))
+            .join(Project, ProjectBilling.project_id == Project.id)
+            .filter(Project.tier1_seller_id == s.id, ProjectBilling.status == 'paid')
+            .scalar()
+        )
+
+        result.append({
+            'id': s.id,
+            'name': s.name,
+            'admin_email': s.admin_email,
+            'subdomain': s.subdomain,
+            'project_count': client_count,  # projects count
+            'revenue': float(revenue)
+        })
+
     return jsonify(result), 200
+
+# from sqlalchemy import func, or_ # <-- Make sure to import or_
+
+# # ... (inside your seller_bp blueprint file)
+
+# @seller_bp.route('/tier1', methods=['GET'])
+# @jwt_required()
+# def get_tier1_sellers():
+#     sellers = Tier1Seller.query.all()
+
+#     result = []
+#     for s in sellers:
+#         # --- CORRECTED LOGIC FOR COUNTS AND REVENUE ---
+
+#         # 1. For each Tier 1 seller, find all Tier 2 sellers they manage.
+#         managed_tier2_ids = [
+#             t2.id for t2 in Tier2Seller.query.filter_by(tier1_seller_id=s.id).all()
+#         ]
+
+#         # 2. Define the filter condition to include both Tier 1 and their Tier 2's projects.
+#         project_filter = or_(
+#             Project.tier1_seller_id == s.id,
+#             Project.tier2_seller_id.in_(managed_tier2_ids)
+#         )
+
+#         # 3. Count all projects matching the filter.
+#         client_count = db.session.query(Project).filter(project_filter).count()
+
+#         # 4. Sum revenue from all paid bills matching the filter.
+#         revenue = (
+#             db.session.query(func.coalesce(func.sum(ProjectBilling.amount), 0))
+#             .join(Project, ProjectBilling.project_id == Project.id)
+#             .filter(project_filter, ProjectBilling.status == 'paid')
+#             .scalar()
+#         )
+
+#         # --- END OF CORRECTION ---
+
+#         result.append({
+#             'id': s.id,
+#             'name': s.name,
+#             'admin_email': s.admin_email,
+#             'subdomain': s.subdomain,
+#             'project_count': client_count,  # Now correctly counts all projects
+#             'revenue': float(revenue)      # Now correctly sums all revenue
+#         })
+
+#     return jsonify(result), 200
+
 
 
 # ------------------ GET SINGLE TIER1 SELLER ------------------
@@ -155,6 +232,9 @@ def create_tier2():
 
 
 # ------------------ GET ALL TIER2 SELLERS ------------------
+from sqlalchemy import func
+
+# ------------------ GET ALL TIER2 SELLERS ------------------
 @seller_bp.route('/tier2', methods=['GET'])
 @jwt_required()
 def get_tier2_sellers():
@@ -167,11 +247,37 @@ def get_tier2_sellers():
     else:
         return jsonify({'message': 'Unauthorized'}), 403
 
-    result = [
-        {'id': s.id, 'name': s.name, 'admin_email': s.admin_email, 'subdomain': s.subdomain}
-        for s in sellers
-    ]
+    result = []
+    for s in sellers:
+        # Count projects under this Tier2 seller (client_count means project_count here)
+        client_count = (
+            db.session.query(Project)
+            .filter(Project.tier2_seller_id == s.id)
+            .count()
+        )
+
+        # Revenue = sum of all paid bills of projects under this Tier2 seller
+        revenue = (
+            db.session.query(func.coalesce(func.sum(ProjectBilling.amount), 0))
+            .join(Project, ProjectBilling.project_id == Project.id)
+            .filter(Project.tier2_seller_id == s.id, ProjectBilling.status == 'paid')
+            .scalar()
+        )
+        # Fetch tier1 seller name
+        tier1_seller = Tier1Seller.query.get(s.tier1_seller_id)
+
+        result.append({
+            'id': s.id,
+            'name': s.name,
+            'admin_email': s.admin_email,
+            'subdomain': s.subdomain,
+            'project_count': client_count,  # projects count
+            'revenue': float(revenue),
+            'tier1_seller': {'name':tier1_seller.name if tier1_seller else None}
+        })
+
     return jsonify(result), 200
+
 
 
 # ------------------ GET SINGLE TIER2 SELLER ------------------

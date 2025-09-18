@@ -31,7 +31,11 @@ def get_all_projects():
     if is_admin(current_user):
         projects = Project.query.all()
     elif is_tier1(current_user):
-        projects = Project.query.filter_by(tier1_seller_id=user_id).all()
+        # MODIFIED: Tier 1 sees their projects that are NOT assigned to a Tier 2 seller.
+        projects = Project.query.filter_by(
+            tier1_seller_id=user_id, 
+            tier2_seller_id=None
+        ).all()
     elif is_tier2(current_user):
         projects = Project.query.filter_by(tier2_seller_id=user_id).all()
     else:
@@ -54,6 +58,92 @@ def get_all_projects():
             'clients': [{'id': c.id, 'name': c.name, 'company': c.company} for c in p.clients]
         })
     return jsonify(result), 200
+
+
+# from sqlalchemy import or_ # <-- IMPORT THIS
+
+
+# @projects_bp.route('/', methods=['GET'])
+# @jwt_required()
+# def get_all_projects():
+#     current_user = get_current_user(get_jwt_identity())
+#     user_id = current_user.get('id')
+
+#     if is_admin(current_user):
+#         # Correct for Admin: Gets all projects
+#         projects = Project.query.all()
+
+#     elif is_tier1(current_user):
+#         # --- CORRECTED LOGIC FOR TIER 1 ---
+
+#         # 1. Find all Tier 2 sellers that belong to this Tier 1 seller.
+#         managed_tier2_ids = [
+#             seller.id for seller in Tier2Seller.query.filter_by(tier1_seller_id=user_id).all()
+#         ]
+
+#         # 2. Query for projects where the project is assigned to the Tier 1 seller
+#         #    OR to one of their managed Tier 2 sellers.
+#         projects = Project.query.filter(
+#             or_(
+#                 Project.tier1_seller_id == user_id,
+#                 Project.tier2_seller_id.in_(managed_tier2_ids)
+#             )
+#         ).all()
+#         # --- END OF CORRECTION ---
+
+#     elif is_tier2(current_user):
+#         # Correct for Tier 2: Gets only their own projects
+#         projects = Project.query.filter_by(tier2_seller_id=user_id).all()
+
+#     else:
+#         return jsonify({'message': 'Access denied'}), 403
+
+#     # The rest of your serialization logic is correct and does not need to change.
+#     result = []
+#     for p in projects:
+#         result.append({
+#             'id': p.id,
+#             'name': p.name,
+#             'status': p.status,
+#             'project_type': p.project_type,
+#             'description': p.description,
+#             'tier1_seller_id': p.tier1_seller_id,
+#             'tier2_seller_id': p.tier2_seller_id,
+#             'project_value': float(p.project_value) if p.project_value else 0,
+#             'hours_used': float(p.hours_used) if p.hours_used else 0,
+#             'hourly_budget': float(p.hourly_budget) if p.hourly_budget else 0,
+#             'completion_percentage': (float(p.hours_used or 0) / float(p.hourly_budget or 1)) * 100 if p.hourly_budget else 0,
+#             'clients': [{'id': c.id, 'name': c.name, 'company': c.company} for c in p.clients]
+#         })
+#     return jsonify(result), 200
+
+@projects_bp.route('/services/<project_id>/toggle', methods=['POST'])
+@jwt_required()
+def toggle_project_status(project_id):
+    current_user = get_current_user(get_jwt_identity())
+    user_id = current_user.get('id')
+
+    project = Project.query.get(project_id)
+    if not project:
+        return jsonify({'message': 'Project not found'}), 404
+
+    # Access control
+    if (is_tier1(current_user) and project.tier1_seller_id != user_id) or \
+       (is_tier2(current_user) and project.tier2_seller_id != user_id):
+        return jsonify({'message': 'Access denied'}), 403
+
+    # Toggle status
+    if project.status == "active":
+        project.status = "inactive"
+    else:
+        project.status = "active"
+
+    db.session.commit()
+    return jsonify({
+        'message': f"Project status toggled to {project.status}",
+        'id': project.id,
+        'status': project.status
+    }), 200
 
 @projects_bp.route('/<project_id>', methods=['GET'])
 @jwt_required()
@@ -95,7 +185,7 @@ def create_project():
 
     data = request.get_json()
     tier1_seller_id = data.get('tier1_seller_id') if is_admin(current_user) else (user_id if is_tier1(current_user) else None)
-    tier2_seller_id = data.get('tier2_seller_id') if is_admin(current_user) else (user_id if is_tier2(current_user) else None)
+    tier2_seller_id = data.get('tier2_seller_id') if is_admin(current_user) or is_tier1(current_user) else (user_id if is_tier2(current_user) else None)
 
     new_project = Project(
         name=data.get('name'),

@@ -3,6 +3,7 @@ from app import create_app
 from flask import Flask
 import os
 from pathlib import Path
+from flask_cors import CORS
 
 def check_environment():
     """Check if required environment variables are set"""
@@ -48,6 +49,7 @@ if __name__ == '__main__':
     
     # Create Flask app
     app = create_app()
+    CORS(app)
     
     # Check React integration
     react_available = setup_react_integration(app)
