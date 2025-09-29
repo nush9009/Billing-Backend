@@ -16,7 +16,7 @@ class ProjectBilling(db.Model):
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.Text)
 
-    commission_id = db.Column(db.String(36), db.ForeignKey('commissions.id'), nullable=True)
+    # commission_id = db.Column(db.String(36), db.ForeignKey('commissions.id'), nullable=True)
 
     status = db.Column(db.String(20), default='pending', nullable=False)
     due_date = db.Column(db.Date)
@@ -26,7 +26,7 @@ class ProjectBilling(db.Model):
 
     project = db.relationship('Project', backref='billing_records')
     invoice = db.relationship('Invoice', back_populates='billing_record', uselist=False)
-    commission = db.relationship('Commission', backref='billing_records')
+    # commission = db.relationship('Commission', backref='billing_records')
 
 
 
