@@ -108,3 +108,72 @@ def get_plans():
         'price': str(plan.price),
         'creator_type': plan.creator_type
     } for plan in plans]), 200
+
+
+# ------------------ GET, UPDATE, DELETE SINGLE PLAN ------------------
+@subscription_bp.route('/plans/<plan_id>', methods=['GET'])
+@jwt_required()
+def get_subscription_plan(plan_id):
+    plan = SubscriptionPlan.query.get(plan_id)
+    if not plan:
+        return jsonify({'message': 'Plan not found'}), 404
+    return jsonify({
+        'id': plan.id,
+        'name': plan.name,
+        'price': str(plan.price),
+        'description': plan.description,
+        'creator_type': plan.creator_type,
+        'admin_commission_pct': str(plan.admin_commission_pct) if plan.admin_commission_pct else None,
+        'tier1_commission_pct': str(plan.tier1_commission_pct) if plan.tier1_commission_pct else None,
+    }), 200
+
+@subscription_bp.route('/plans/<plan_id>', methods=['PUT'])
+@jwt_required()
+def update_subscription_plan(plan_id):
+    plan = SubscriptionPlan.query.get(plan_id)
+    if not plan:
+        return jsonify({'message': 'Plan not found'}), 404
+
+    current_user = get_current_user(get_jwt_identity())
+    # Security check: only the creator can update the plan
+    if plan.creator_id != current_user['id']:
+        return jsonify({'message': 'Unauthorized to update this plan'}), 403
+
+    data = request.get_json()
+    plan.name = data.get('name', plan.name)
+    plan.price = data.get('price', plan.price)
+    plan.description = data.get('description', plan.description)
+    
+    # Only allow updating relevant commission
+    if plan.creator_type == 'admin':
+        plan.admin_commission_pct = data.get('admin_commission_pct', plan.admin_commission_pct)
+    elif plan.creator_type == 'tier1_seller':
+        plan.tier1_commission_pct = data.get('tier1_commission_pct', plan.tier1_commission_pct)
+
+    db.session.commit()
+    return jsonify({'message': 'Plan updated successfully'}), 200
+
+@subscription_bp.route('/plans/<plan_id>', methods=['DELETE'])
+@jwt_required()
+def delete_subscription_plan(plan_id):
+    plan = SubscriptionPlan.query.get(plan_id)
+    if not plan:
+        return jsonify({'message': 'Plan not found'}), 404
+
+    current_user = get_current_user(get_jwt_identity())
+    # Security check: only the creator can delete the plan
+    if plan.creator_id != current_user['id']:
+        return jsonify({'message': 'Unauthorized to delete this plan'}), 403
+        
+    # Optional: Add check here to prevent deletion if plan has active subscriptions
+
+    db.session.delete(plan)
+    db.session.commit()
+    return jsonify({'message': 'Plan deleted successfully'}), 200
+
+
+
+
+
+
+
