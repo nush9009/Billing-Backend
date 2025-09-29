@@ -12,7 +12,6 @@ class Project(db.Model):
     description = db.Column(db.Text)
     start_date = db.Column(db.Date)
     end_date = db.Column(db.Date)
-    project_value = db.Column(db.Numeric(12, 2))
     billing_frequency = db.Column(db.String(20), default='milestone')
     hourly_budget = db.Column(db.Numeric(8, 2))
     hours_used = db.Column(db.Numeric(8, 2), default=0)
@@ -20,7 +19,7 @@ class Project(db.Model):
     admin_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=True) 
     tier1_seller_id = db.Column(db.String(36), db.ForeignKey('tier1_sellers.id'), nullable=True)
     tier2_seller_id = db.Column(db.String(36), db.ForeignKey('tier2_sellers.id'), nullable=True)
-
+    subscription_plan_id = db.Column(db.String(36), db.ForeignKey('subscription_plans.id'), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -39,4 +38,56 @@ class Client(db.Model):
     company = db.Column(db.String(255))  # optional
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+
+class SubscriptionPlan(db.Model):
+    __tablename__ = 'subscription_plans'
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text)
+    price = db.Column(db.Numeric(12, 2), nullable=False)
+
+    # Who created the plan? (Admin OR Tier1)
+    created_by_admin_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=True)
+    created_by_tier1_id = db.Column(db.String(36), db.ForeignKey('tier1_sellers.id'), nullable=True)
+
+    # Commission rules
+    admin_commission_pct = db.Column(db.Numeric(5, 2), nullable=True)   # % Admin earns
+    tier1_commission_pct = db.Column(db.Numeric(5, 2), nullable=True)   # % Tier1 earns from Tier2
+
+    billing_cycle = db.Column(db.String(20), default='monthly') 
+    status = db.Column(db.String(20), default='active')
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    projects = db.relationship('Project', backref='subscription_plan', lazy=True)
+    admin = db.relationship('Admin', backref='subscription_plans')
+    tier1_seller = db.relationship('Tier1Seller', backref='subscription_plans')
+
+
+class Commission(db.Model):
+    __tablename__ = 'commissions'
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+
+    subscription_plan_id = db.Column(db.String(36), db.ForeignKey('subscription_plans.id'), nullable=False)
+    tier1_seller_id = db.Column(db.String(36), db.ForeignKey('tier1_sellers.id'), nullable=True)  
+    tier2_seller_id = db.Column(db.String(36), db.ForeignKey('tier2_sellers.id'), nullable=True)  
+    admin_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=True)
+
+    # Commission percentages
+    tier1_commission_pct = db.Column(db.Numeric(5, 2), nullable=True)   # Tier1 takes from Tier2
+    admin_commission_pct = db.Column(db.Numeric(5, 2), nullable=True)  # Admin always takes
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    subscription_plan = db.relationship('SubscriptionPlan', backref='commissions')
+    tier1_seller = db.relationship('Tier1Seller', backref='commissions')
+    tier2_seller = db.relationship('Tier2Seller', backref='commissions')
+    admin = db.relationship('Admin', backref='commissions')
 

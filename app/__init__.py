@@ -58,6 +58,7 @@ def create_app():
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
     app.register_blueprint(billing_bp, url_prefix='/api/billing')
     
+    
     react_build_path = Path("dist")  # or Path("frontend/dist") if in subdirectory
     print(react_build_path)
     if react_build_path.exists():

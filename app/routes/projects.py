@@ -51,7 +51,7 @@ def get_all_projects():
             'description': p.description,
             'tier1_seller_id': p.tier1_seller_id,
             'tier2_seller_id': p.tier2_seller_id,
-            'project_value': float(p.project_value) if p.project_value else 0,
+            # 'project_value': float(p.project_value) if p.project_value else 0,
             'hours_used': float(p.hours_used) if p.hours_used else 0,
             'hourly_budget': float(p.hourly_budget) if p.hourly_budget else 0,
             'completion_percentage': (float(p.hours_used or 0) / float(p.hourly_budget or 1)) * 100 if p.hourly_budget else 0,
