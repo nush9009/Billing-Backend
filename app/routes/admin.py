@@ -6,34 +6,67 @@ from app.utils.auth import admin_required,jwt_required_custom
 from datetime import date
 from sqlalchemy import or_
 admin_bp = Blueprint('admin', __name__)
+# Make sure to import these models at the top of your admin routes file
+from app.models.billing import ProjectBilling, Invoice
+from app.models.project import SubscriptionPlan
+from app.models.seller import Tier1Seller, Tier2Seller
+from app.models import Project
+from decimal import Decimal
+from datetime import date
+from app import db
+from app.utils.auth import admin_required # Assuming you have this decorator
 
 @admin_bp.route('/dashboard', methods=['GET'])
 @admin_required
 def get_admin_dashboard():
-    """Provides a complete overview of the system for the admin."""
+    """Provides a complete, commission-based overview of the system for the admin."""
     try:
-        # Counts
+        # --- 1. Counts (No changes needed) ---
         total_tier1 = Tier1Seller.query.count()
         total_tier2 = Tier2Seller.query.count()
         total_projects = Project.query.count()
     
-
-        # Monthly Revenue (sum of paid invoices issued this month)
+        # --- 2. NEW: Commission-based Monthly Revenue Calculation ---
+        monthly_revenue = Decimal('0.0')
         today = date.today()
-        monthly_invoices = Invoice.query.filter(
+
+        # Find all bills that were paid in the current month
+        paid_bills_this_month = db.session.query(ProjectBilling).join(
+            Invoice, ProjectBilling.id == Invoice.billing_record_id
+        ).filter(
             db.extract('year', Invoice.paid_date) == today.year,
             db.extract('month', Invoice.paid_date) == today.month,
             Invoice.status == 'paid'
         ).all()
 
-        monthly_revenue = sum(float(inv.total_amount) for inv in monthly_invoices)
+        for bill in paid_bills_this_month:
+            plan = bill.project.subscription_plan
+            
+            if plan and plan.admin_commission_pct is not None:
+                base_price = Decimal(plan.price)
+                admin_pct = Decimal(plan.admin_commission_pct)
+
+                # Case A: Commission from a Tier-1 seller's direct project
+                if bill.project.tier1_seller_id and not bill.project.tier2_seller_id:
+                    admin_commission = base_price * (admin_pct / 100)
+                    monthly_revenue += admin_commission
+                
+                # Case B: Admin's share of commission from a Tier-2 seller's project
+                elif bill.project.tier2_seller_id and plan.tier1_commission_pct is not None:
+                    tier1_pct = Decimal(plan.tier1_commission_pct)
+                    
+                    # First, find the commission the Tier-1 seller earned
+                    tier1_commission_earned = base_price * (tier1_pct / 100)
+                    # Then, find the admin's share of that commission
+                    admin_share = tier1_commission_earned * (admin_pct / 100)
+                    monthly_revenue += admin_share
 
         return jsonify({
             'stats': {
                 'total_tier1_sellers': total_tier1,
                 'total_tier2_sellers': total_tier2,
                 'total_projects': total_projects,
-                'monthly_revenue': monthly_revenue
+                'monthly_revenue': float(monthly_revenue)
             }
         }), 200
 
@@ -41,153 +74,160 @@ def get_admin_dashboard():
         return jsonify({'message': f'Error fetching admin data: {str(e)}'}), 500
 
 
+# Make sure to import these models at the top of your admin routes file
+from app.models.billing import ProjectBilling, Invoice
+from app.models.project import SubscriptionPlan
+from app.models.seller import Tier2Seller
+from app.models import Project # Ensure Project is imported
+from decimal import Decimal
+from datetime import date
+from app import db # Ensure db is imported
 
 @admin_bp.route('/dashboard/tier1/<tier1_id>', methods=['GET'])
 @jwt_required_custom
 def get_tier1_dashboard(tier1_id):
     """
-    Provides an overview for a specific Tier1 seller with updated logic.
-    - Monthly Revenue: Sum of paid invoices from their associated Tier 2 sellers.
-    - Total Projects: Count of projects assigned ONLY to the Tier 1 seller.
+    Provides a dashboard overview for a specific Tier-1 seller based on commission logic.
     """
     try:
-        # --- Total Tier 2 sellers count remains the same ---
+        # --- 1. Total Tier 2 sellers and Total Projects (No changes needed) ---
         total_tier2 = Tier2Seller.query.filter_by(tier1_seller_id=tier1_id).count()
-
-        # --- MODIFIED: Count only projects assigned to Tier 1, not delegated ---
         total_projects = Project.query.filter_by(
             tier1_seller_id=tier1_id, 
-            tier2_seller_id=None  # This ensures we only count projects not assigned to a Tier 2
+            tier2_seller_id=None
         ).count()
 
-        # --- CORRECT: Revenue from Tier 2 sellers' paid bills ---
-        # 1. Get all Tier 2 seller IDs managed by this Tier 1 seller
+        # --- 2. Calculate Total Revenue (Commission received from PAID Tier 2 seller bills) ---
         tier2_seller_ids = [
             seller.id for seller in Tier2Seller.query.filter_by(tier1_seller_id=tier1_id).all()
         ]
-
-        monthly_revenue = 0
-        # 2. Only calculate revenue if there are associated Tier 2 sellers
+        
+        total_revenue_from_tier2 = Decimal('0.0')
+        tier2_bills = []
         if tier2_seller_ids:
-            today = date.today()
-            # 3. Sum paid invoices for projects assigned to those Tier 2 sellers
-            monthly_invoices = (
-                Invoice.query.join(Project, Invoice.project_id == Project.id)
-                .filter(
-                    Project.tier2_seller_id.in_(tier2_seller_ids),
-                    db.extract('year', Invoice.paid_date) == today.year,
-                    db.extract('month', Invoice.paid_date) == today.month,
-                    Invoice.status == 'paid'
-                )
-                .all()
-            )
-            monthly_revenue = sum(float(inv.total_amount) for inv in monthly_invoices)
+            tier2_bills = db.session.query(ProjectBilling).join(
+                Project, ProjectBilling.project_id == Project.id
+            ).filter(
+                Project.tier2_seller_id.in_(tier2_seller_ids)
+            ).all()
+
+            for bill in tier2_bills:
+                if bill.status == 'paid':
+                    plan = bill.project.subscription_plan
+                    if plan and plan.tier1_commission_pct is not None:
+                        base_price = Decimal(plan.price)
+                        commission_pct = Decimal(plan.tier1_commission_pct)
+                        total_revenue_from_tier2 += base_price * (commission_pct / 100)
+
+        # --- 3. Calculate Paid and Pending Commission (Owed to Admin) ---
+        total_paid_to_admin = Decimal('0.0')
+        pending_amount_to_admin = Decimal('0.0')
+
+        # Part A: Commission from the Tier 1 seller's own projects
+        tier1_own_bills = db.session.query(ProjectBilling).join(
+            Project, ProjectBilling.project_id == Project.id
+        ).filter(
+            Project.tier1_seller_id == tier1_id,
+            Project.tier2_seller_id == None
+        ).all()
+
+        for bill in tier1_own_bills:
+            plan = bill.project.subscription_plan
+            if plan and plan.admin_commission_pct is not None:
+                base_price = Decimal(plan.price)
+                commission_pct = Decimal(plan.admin_commission_pct)
+                commission_amount = base_price * (commission_pct / 100)
+
+                if bill.status == 'paid':
+                    total_paid_to_admin += commission_amount
+                elif bill.status in ['pending', 'invoiced']:
+                    pending_amount_to_admin += commission_amount
+
+        # --- NEW LOGIC ---
+        # Part B: Admin's share of the commission from Tier 2 seller projects
+        for bill in tier2_bills:
+            plan = bill.project.subscription_plan
+            if plan and plan.tier1_commission_pct is not None and plan.admin_commission_pct is not None:
+                base_price = Decimal(plan.price)
+                tier1_pct = Decimal(plan.tier1_commission_pct)
+                admin_pct = Decimal(plan.admin_commission_pct)
+
+                # First, find the commission the Tier 1 earned
+                tier1_commission_earned = base_price * (tier1_pct / 100)
+                # Then, find the admin's share of that commission
+                admin_share = tier1_commission_earned * (admin_pct / 100)
+
+                if bill.status == 'paid':
+                    total_paid_to_admin += admin_share
+                elif bill.status in ['pending', 'invoiced']:
+                    pending_amount_to_admin += admin_share
+
 
         return jsonify({
             'stats': {
                 'tier1_seller_id': tier1_id,
                 'total_tier2_sellers': total_tier2,
                 'total_projects': total_projects,
-                'monthly_revenue': monthly_revenue
+                'total_revenue': float(total_revenue_from_tier2),
+                'total_paid': float(total_paid_to_admin),
+                'pending_amount': float(pending_amount_to_admin)
             }
         }), 200
        
     except Exception as e:
         return jsonify({'message': f'Error fetching Tier1 dashboard: {str(e)}'}), 500
 
-# # In your admin blueprint file (e.g., admin.py)
-# from sqlalchemy import or_ # <-- Make sure to import or_
-# from datetime import date
-# # ... other necessary imports
-
-# @admin_bp.route('/dashboard/tier1/<tier1_id>', methods=['GET'])
-# @jwt_required_custom
-# def get_tier1_dashboard(tier1_id):
-#     """Provides overview of the system for a specific Tier1 seller (admin view)."""
-#     try:
-#         # --- CORRECTED LOGIC FOR COUNTS AND REVENUE ---
-
-#         # 1. Find all Tier 2 sellers that belong to this Tier 1 seller.
-#         managed_tier2_ids = [
-#             seller.id for seller in Tier2Seller.query.filter_by(tier1_seller_id=tier1_id).all()
-#         ]
-
-#         # 2. Correctly count total projects (Tier 1's own + their Tier 2's projects)
-#         total_projects = Project.query.filter(
-#             or_(
-#                 Project.tier1_seller_id == tier1_id,
-#                 Project.tier2_seller_id.in_(managed_tier2_ids)
-#             )
-#         ).count()
-
-#         # 3. This count is correct as is.
-#         total_tier2 = len(managed_tier2_ids)
-
-#         # 4. Correctly calculate monthly revenue (from Tier 1's own + their Tier 2's projects)
-#         today = date.today()
-#         monthly_invoices = (
-#             Invoice.query.join(Project, Invoice.project_id == Project.id)
-#             .filter(
-#                 or_( # Use the same OR condition here
-#                     Project.tier1_seller_id == tier1_id,
-#                     Project.tier2_seller_id.in_(managed_tier2_ids)
-#                 ),
-#                 db.extract('year', Invoice.paid_date) == today.year,
-#                 db.extract('month', Invoice.paid_date) == today.month,
-#                 Invoice.status == 'paid'
-#             )
-#             .all()
-#         )
-#         monthly_revenue = sum(float(inv.total_amount) for inv in monthly_invoices)
-
-#         # --- END OF CORRECTION ---
-
-#         return jsonify({
-#             'stats': {
-#                 'tier1_seller_id': tier1_id,
-#                 'total_tier2_sellers': total_tier2,
-#                 'total_projects': total_projects,
-#                 'monthly_revenue': monthly_revenue
-#             }
-#         }), 200
-       
-#     except Exception as e:
-#         return jsonify({'message': f'Error fetching Tier1 dashboard: {str(e)}'}), 500
-
-
-# Add this endpoint after your get_tier1_dashboard function
+# You will need to import these models at the top of your routes file
+from app.models.billing import ProjectBilling
+from app.models.project import SubscriptionPlan
+from decimal import Decimal
 
 @admin_bp.route('/dashboard/tier2/<tier2_id>', methods=['GET'])
-@jwt_required_custom  # Assuming a logged-in tier2 seller can access their own data
+@jwt_required_custom
 def get_tier2_dashboard(tier2_id):
-    """Provides an overview for a specific Tier-2 seller."""
+    """
+    Provides a dashboard overview for a specific Tier-2 seller, 
+    calculating paid and pending commissions owed to their Tier-1 parent.
+    """
     try:
-        # 1. Count total projects for this Tier-2 seller
+        # 1. Get all billing records for the Tier-2 seller's projects
+        bills = db.session.query(ProjectBilling).join(
+            Project, ProjectBilling.project_id == Project.id
+        ).filter(Project.tier2_seller_id == tier2_id).all()
+
         total_projects = Project.query.filter_by(tier2_seller_id=tier2_id).count()
+        paid_commission = Decimal('0.0')
+        pending_commission = Decimal('0.0')
 
-        # 2. Calculate monthly revenue for this Tier-2 seller
-        today = date.today()
-        monthly_invoices = (
-            Invoice.query
-            .join(Project, Invoice.project_id == Project.id)
-            .filter(
-                Project.tier2_seller_id == tier2_id,
-                db.extract('year', Invoice.paid_date) == today.year,
-                db.extract('month', Invoice.paid_date) == today.month,
-                Invoice.status == 'paid'
-            )
-            .all()
-        )
+        # 2. Iterate through each bill to calculate commission
+        for bill in bills:
+            plan = bill.project.subscription_plan
+            
+            # Proceed only if the project has a plan with T1 commission
+            if plan and plan.tier1_commission_pct is not None:
+                base_price = Decimal(plan.price)
+                commission_pct = Decimal(plan.tier1_commission_pct)
+                
+                # Calculate the commission amount from the plan's base price
+                commission_amount = base_price * (commission_pct / 100)
 
-        monthly_revenue = sum(float(inv.total_amount) for inv in monthly_invoices)
-
+                # 3. Add the commission to the correct bucket based on status
+                if bill.status == 'paid':
+                    paid_commission += commission_amount
+                elif bill.status in ['pending', 'invoiced']:
+                    pending_commission += commission_amount
+        
         return jsonify({
             'stats': {
                 'tier2_seller_id': tier2_id,
                 'total_projects': total_projects,
-                'monthly_revenue': monthly_revenue
+                'paid_amount': float(paid_commission),
+                'pending_amount': float(pending_commission)
             }
         }), 200
 
     except Exception as e:
+        # It's helpful to log the error for debugging
+        # import logging
+        # logging.error(f"Error fetching Tier-2 dashboard: {str(e)}")
         return jsonify({'message': f'Error fetching Tier-2 dashboard: {str(e)}'}), 500

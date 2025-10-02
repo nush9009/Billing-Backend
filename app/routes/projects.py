@@ -4,6 +4,9 @@ from app import db
 from app.models import Admin, Client , Project, Tier1Seller, Tier2Seller
 from datetime import datetime
 
+from app.models.project import SubscriptionPlan
+from app.models.seller import Tier2Seller
+
 projects_bp = Blueprint('projects', __name__)
 
 # ------------------ HELPER FUNCTIONS ------------------
@@ -55,67 +58,12 @@ def get_all_projects():
             'hours_used': float(p.hours_used) if p.hours_used else 0,
             'hourly_budget': float(p.hourly_budget) if p.hourly_budget else 0,
             'completion_percentage': (float(p.hours_used or 0) / float(p.hourly_budget or 1)) * 100 if p.hourly_budget else 0,
-            'clients': [{'id': c.id, 'name': c.name, 'company': c.company} for c in p.clients]
+            'clients': [{'id': c.id, 'name': c.name, 'company': c.company} for c in p.clients],
+            'subscription_plan_id': p.subscription_plan_id 
         })
     return jsonify(result), 200
 
 
-# from sqlalchemy import or_ # <-- IMPORT THIS
-
-
-# @projects_bp.route('/', methods=['GET'])
-# @jwt_required()
-# def get_all_projects():
-#     current_user = get_current_user(get_jwt_identity())
-#     user_id = current_user.get('id')
-
-#     if is_admin(current_user):
-#         # Correct for Admin: Gets all projects
-#         projects = Project.query.all()
-
-#     elif is_tier1(current_user):
-#         # --- CORRECTED LOGIC FOR TIER 1 ---
-
-#         # 1. Find all Tier 2 sellers that belong to this Tier 1 seller.
-#         managed_tier2_ids = [
-#             seller.id for seller in Tier2Seller.query.filter_by(tier1_seller_id=user_id).all()
-#         ]
-
-#         # 2. Query for projects where the project is assigned to the Tier 1 seller
-#         #    OR to one of their managed Tier 2 sellers.
-#         projects = Project.query.filter(
-#             or_(
-#                 Project.tier1_seller_id == user_id,
-#                 Project.tier2_seller_id.in_(managed_tier2_ids)
-#             )
-#         ).all()
-#         # --- END OF CORRECTION ---
-
-#     elif is_tier2(current_user):
-#         # Correct for Tier 2: Gets only their own projects
-#         projects = Project.query.filter_by(tier2_seller_id=user_id).all()
-
-#     else:
-#         return jsonify({'message': 'Access denied'}), 403
-
-#     # The rest of your serialization logic is correct and does not need to change.
-#     result = []
-#     for p in projects:
-#         result.append({
-#             'id': p.id,
-#             'name': p.name,
-#             'status': p.status,
-#             'project_type': p.project_type,
-#             'description': p.description,
-#             'tier1_seller_id': p.tier1_seller_id,
-#             'tier2_seller_id': p.tier2_seller_id,
-#             'project_value': float(p.project_value) if p.project_value else 0,
-#             'hours_used': float(p.hours_used) if p.hours_used else 0,
-#             'hourly_budget': float(p.hourly_budget) if p.hourly_budget else 0,
-#             'completion_percentage': (float(p.hours_used or 0) / float(p.hourly_budget or 1)) * 100 if p.hourly_budget else 0,
-#             'clients': [{'id': c.id, 'name': c.name, 'company': c.company} for c in p.clients]
-#         })
-#     return jsonify(result), 200
 
 @projects_bp.route('/services/<project_id>/toggle', methods=['POST'])
 @jwt_required()
@@ -171,36 +119,9 @@ def get_project(project_id):
         'hours_used': float(project.hours_used) if project.hours_used else 0,
         'hourly_budget': float(project.hourly_budget) if project.hourly_budget else 0,
         'completion_percentage': (float(project.hours_used or 0) / float(project.hourly_budget or 1)) * 100 if project.hourly_budget else 0,
-        'clients': [{'id': c.id, 'name': c.name, 'company': c.company} for c in project.clients]
+        'clients': [{'id': c.id, 'name': c.name, 'company': c.company} for c in project.clients],
+        'subscription_plan_id': project.subscription_plan_id
     }), 200
-
-# @projects_bp.route('/', methods=['POST'])
-# @jwt_required()
-# def create_project():
-#     current_user = get_current_user(get_jwt_identity())
-#     user_id = current_user.get('id')
-
-#     if not (is_admin(current_user) or is_tier1(current_user) or is_tier2(current_user)):
-#         return jsonify({'message': 'Access denied'}), 403
-
-#     data = request.get_json()
-#     tier1_seller_id = data.get('tier1_seller_id') if is_admin(current_user) else (user_id if is_tier1(current_user) else None)
-#     tier2_seller_id = data.get('tier2_seller_id') if is_admin(current_user) or is_tier1(current_user) else (user_id if is_tier2(current_user) else None)
-
-#     new_project = Project(
-#         name=data.get('name'),
-#         status=data.get('status', 'active'),
-#         project_type=data.get('project_type'),
-#         description=data.get('description'),
-#         project_value=data.get('project_value'),
-#         billing_frequency=data.get('billing_frequency', 'milestone'),
-#         hourly_budget=data.get('hourly_budget'),
-#         tier1_seller_id=tier1_seller_id,
-#         tier2_seller_id=tier2_seller_id
-#     )
-#     db.session.add(new_project)
-#     db.session.commit()
-#     return jsonify({'message': 'Project created successfully', 'id': new_project.id}), 201
 
 @projects_bp.route('/', methods=['POST'])
 @jwt_required()
@@ -214,19 +135,33 @@ def create_project():
     data = request.get_json()
     subscription_plan_id = data.get('subscription_plan_id')
     subscription_plan_name = data.get('subscription_plan_name')
+    plan = None
 
-    if not subscription_plan_id and not subscription_plan_name:
-        return jsonify({'message': 'A subscription_plan_id or subscription_plan_name is required'}), 400
-
-    # If only name is given, fetch id
-    if not subscription_plan_id and subscription_plan_name:
+    # --- 1. FIND the plan by ID or Name ---
+    if subscription_plan_id:
+        plan = SubscriptionPlan.query.get(subscription_plan_id)
+    elif subscription_plan_name:
         plan = SubscriptionPlan.query.filter_by(name=subscription_plan_name).first()
-        if not plan:
-            return jsonify({'message': f'Subscription plan "{subscription_plan_name}" not found'}), 404
-        subscription_plan_id = plan.id
+    else:
+        return jsonify({'message': 'Either subscription_plan_id or subscription_plan_name is required'}), 400
 
+    if not plan:
+        return jsonify({'message': 'Subscription plan not found'}), 404
 
-    tier1_seller_id = data.get('tier1_seller_id') if is_admin(current_user) else (user_id if is_tier1(current_user) else None)
+    # --- 2. VALIDATE the plan based on user role (same logic as before) ---
+    if is_tier1(current_user):
+        # Tier 1 sellers must use an admin-created plan
+        if plan.creator_type != 'admin':
+            return jsonify({'message': 'Tier 1 sellers must select a plan created by an Admin.'}), 403
+
+    elif is_tier2(current_user):
+        # Tier 2 sellers must use a plan created by their parent Tier 1
+        tier2_seller = Tier2Seller.query.get(user_id)
+        if plan.creator_id != tier2_seller.tier1_seller_id:
+            return jsonify({'message': 'This plan is not available to you.'}), 403
+
+    # --- 3. CREATE the project ---
+    tier1_seller_id = data.get('tier1_seller_id') if is_admin(current_user) else (user_id if is_tier1(current_user) else Tier2Seller.query.get(user_id).tier1_seller_id)
     tier2_seller_id = data.get('tier2_seller_id') if is_admin(current_user) or is_tier1(current_user) else (user_id if is_tier2(current_user) else None)
 
     new_project = Project(
@@ -238,12 +173,11 @@ def create_project():
         hourly_budget=data.get('hourly_budget'),
         tier1_seller_id=tier1_seller_id,
         tier2_seller_id=tier2_seller_id,
-        subscription_plan_id=subscription_plan_id
+        subscription_plan_id=plan.id  # Use the ID from the plan object we found
     )
     db.session.add(new_project)
     db.session.commit()
     return jsonify({'message': 'Project created successfully', 'id': new_project.id}), 201
-
 
 @projects_bp.route('/<project_id>', methods=['PUT', 'PATCH'])
 @jwt_required()

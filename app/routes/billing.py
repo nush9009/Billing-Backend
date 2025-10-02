@@ -5,6 +5,7 @@ from app import db
 from app.utils.auth import jwt_required_custom
 from app.models import Project, Client
 from app.models.billing import ProjectBilling, Invoice
+from app.models.seller import Tier2Seller
 from datetime import date, timedelta
 import uuid
 from decimal import Decimal
@@ -131,14 +132,63 @@ def get_project_bills(project_id):
     ]), 200
 
 
+from sqlalchemy import or_ # <-- 
+
+# ... (all other routes remain the same) ...
+
+
 # @billing_bp.route('/revenue', methods=['GET'])
 # @jwt_required_custom
 # def revenue_overview():
-#     """Get overall revenue stats + billing details for dashboard."""
-#     from app.models import Client, Tier1Seller, Tier2Seller  # make sure they exist
+#     """
+#     Get overall revenue stats + billing details for the dashboard,
+#     filtered by the current user's role and permissions.
+#     """
+#     # --- MODIFICATION START ---
 
-#     bills = ProjectBilling.query.join(Project).all()
+#     # 1. Get the current user's identity and role
+#     user_id = get_jwt_identity()
+#     current_user = get_current_user(user_id)
+#     if not current_user:
+#         return jsonify({'message': 'User not found or invalid token'}), 401
 
+#     # Import models here as in the original code
+#     from app.models import Admin, Tier1Seller, Tier2Seller
+
+#     # 2. Build the base query to join ProjectBilling with Project
+#     base_query = ProjectBilling.query.join(Project, ProjectBilling.project_id == Project.id)
+
+#     # 3. Apply role-based filtering to the query
+#     if is_admin(current_user):
+#         # Admin sees everything, no additional filters needed.
+#         bills = base_query.all()
+    
+#     elif is_tier1(current_user):
+#         # Tier 1 Seller sees their own projects AND projects of Tier 2 sellers they manage.
+        
+#         # Get IDs of all Tier 2 sellers managed by this Tier 1 seller
+#         managed_tier2_ids = [
+#             seller.id for seller in Tier2Seller.query.filter_by(tier1_seller_id=current_user['id']).all()
+#         ]
+        
+#         bills = base_query.filter(
+#             or_(
+#                 Project.tier1_seller_id == current_user['id'],
+#                 Project.tier2_seller_id.in_(managed_tier2_ids)
+#             )
+#         ).all()
+
+#     elif is_tier2(current_user):
+#         # Tier 2 Seller sees only their own projects.
+#         bills = base_query.filter(Project.tier2_seller_id == current_user['id']).all()
+    
+#     else:
+#         # If user has no recognizable role, return no bills.
+#         bills = []
+        
+#     # --- MODIFICATION END ---
+
+#     # The rest of the function processes the filtered `bills` list
 #     total_bills = len(bills)
 #     total_value = sum(float(b.amount) for b in bills)
 
@@ -160,16 +210,6 @@ def get_project_bills(project_id):
 
 #     details = []
 #     for bill in bills:
-#         # client_name = None
-#         # tier = None
-
-#         # # resolve client & tier
-#         # if bill.project and bill.project.name:
-#         #     client_name = bill.project.name
-#         # if bill.project and bill.project.tier1_seller_id:
-#         #     tier = "Tier-1"
-#         # elif bill.project and bill.project.tier2_seller_id:
-#         #     tier = "Tier-2"
 #         client_name = bill.project.name if bill.project and bill.project.name else "Unknown"
 #         tier = "Tier-2" if bill.project and bill.project.tier2_seller_id else ("Tier-1" if bill.project and bill.project.tier1_seller_id else None)
 
@@ -192,13 +232,143 @@ def get_project_bills(project_id):
 #     }), 200
 
 
-# billing_routes.py
+# In app/routes/billing.py
 
-# ... (other imports remain the same)
-from sqlalchemy import or_ # <-- 
+# Make sure SubscriptionPlan is imported at the top of the file
+from app.models.project import SubscriptionPlan
+from sqlalchemy import or_
+from decimal import Decimal
+from datetime import date
 
-# ... (all other routes remain the same) ...
+# ... (keep all other routes as they are) ...
+# In app/routes/billing.py
 
+# @billing_bp.route('/revenue', methods=['GET'])
+# @jwt_required_custom
+# def revenue_overview():
+#     """
+#     Get overall revenue stats + billing details for the dashboard,
+#     filtered by the current user's role and permissions.
+#     """
+#     user_id = get_jwt_identity()
+#     current_user = get_current_user(user_id)
+#     if not current_user:
+#         return jsonify({'message': 'User not found or invalid token'}), 401
+
+#     base_query = db.session.query(ProjectBilling).join(
+#         Project, ProjectBilling.project_id == Project.id
+#     ).outerjoin(
+#         SubscriptionPlan, Project.subscription_plan_id == SubscriptionPlan.id
+#     )
+
+#     # --- Role-based filtering (no changes here) ---
+#     if is_admin(current_user):
+#         bills = base_query.all()
+#     elif is_tier1(current_user):
+#         managed_tier2_ids = [
+#             seller.id for seller in Tier2Seller.query.filter_by(tier1_seller_id=current_user['id']).all()
+#         ]
+#         bills = base_query.filter(
+#             or_(
+#                 Project.tier1_seller_id == current_user['id'],
+#                 Project.tier2_seller_id.in_(managed_tier2_ids)
+#             )
+#         ).all()
+#     elif is_tier2(current_user):
+#         bills = base_query.filter(Project.tier2_seller_id == current_user['id']).all()
+#     else:
+#         bills = []
+    
+#     # --- Summary calculation (no changes here) ---
+#     # ... (summary logic remains the same)
+#     total_bills = len(bills)
+#     total_value = sum(float(b.amount) for b in bills)
+#     paid_bills = [b for b in bills if b.status == 'paid']
+#     pending_bills = [b for b in bills if b.status in ['pending', 'invoiced']]
+#     overdue_bills = [
+#         b for b in bills if b.status in ['pending', 'invoiced'] and b.due_date and b.due_date < date.today()
+#     ]
+#     summary = {
+#         "total_bills": total_bills,
+#         "total_value": total_value,
+#         "paid_bills": len(paid_bills),
+#         "collected_amount": sum(float(b.amount) for b in paid_bills),
+#         "pending_bills": len(pending_bills),
+#         "outstanding_amount": sum(float(b.amount) for b in pending_bills),
+#         "overdue_bills": len(overdue_bills)
+#     }
+
+#     # --- MODIFICATION START ---
+#     details = []
+#     for bill in bills:
+#         plan = bill.project.subscription_plan if bill.project else None
+#         client_name = bill.project.name if bill.project else "Unknown"
+        
+#         # Default values
+#         project_value = float(bill.amount) # Fallback to bill amount if no plan
+#         commission_pct = None
+#         commission_amount = 0
+
+#         if plan:
+#             # 1. "Project Value" is now the plan's base price
+#             base_price = Decimal(plan.price)
+#             project_value = float(base_price)
+            
+#             # 2. Determine the correct commission percentage based on user role
+#             pct_to_use = None
+#             if is_tier2(current_user) and plan.tier1_commission_pct is not None:
+#                 pct_to_use = Decimal(plan.tier1_commission_pct)
+#             elif is_tier1(current_user) and plan.admin_commission_pct is not None:
+#                 pct_to_use = Decimal(plan.admin_commission_pct)
+#             elif is_admin(current_user) and plan.admin_commission_pct is not None:
+#                 pct_to_use = Decimal(plan.admin_commission_pct)
+
+#             # 3. "Amount" is now the commission calculated from the base price
+#             if pct_to_use is not None:
+#                 commission_pct = float(pct_to_use)
+#                 commission_amount = float(base_price * (pct_to_use / 100))
+
+#         details.append({
+#             "client_name": client_name,
+#             "invoice_id": bill.invoice.invoice_number if bill.invoice else None,
+            
+#             # Updated fields to match your new logic
+#             "project_value": project_value,         # Changed from bill_amount
+#             "commission_percentage": commission_pct,
+#             "commission_amount": commission_amount, # Now based on plan price
+            
+#             "due_date": bill.due_date.isoformat() if bill.due_date else None,
+#             "status": (
+#                 "Overdue" if bill.status in ["pending", "invoiced"] and bill.due_date and bill.due_date < date.today()
+#                 else bill.status.capitalize()
+#             ),
+#             "payment_date": bill.invoice.paid_date.isoformat() if (bill.invoice and bill.invoice.paid_date) else None,
+#         })
+#     # --- MODIFICATION END ---
+
+#     return jsonify({
+#         "summary": summary,
+#         "billing_details": details
+#     }), 200
+
+# In app/routes/billing.py
+
+# In app/routes/billing.py
+
+# Make sure all necessary models and libraries are imported at the top of the file
+# In app/routes/billing.py
+
+# In app/routes/billing.py
+
+from app.models.project import SubscriptionPlan, Project
+from app.models.billing import ProjectBilling
+from app.models.seller import Tier1Seller, Tier2Seller
+from sqlalchemy import or_
+from decimal import Decimal
+from datetime import date
+from app import db 
+from app.routes.projects import get_current_user, get_jwt_identity, is_admin, is_tier1, is_tier2
+from app.utils.auth import jwt_required_custom
 
 @billing_bp.route('/revenue', methods=['GET'])
 @jwt_required_custom
@@ -207,89 +377,164 @@ def revenue_overview():
     Get overall revenue stats + billing details for the dashboard,
     filtered by the current user's role and permissions.
     """
-    # --- MODIFICATION START ---
-
-    # 1. Get the current user's identity and role
     user_id = get_jwt_identity()
     current_user = get_current_user(user_id)
     if not current_user:
         return jsonify({'message': 'User not found or invalid token'}), 401
 
-    # Import models here as in the original code
-    from app.models import Admin, Tier1Seller, Tier2Seller
+    # --- UPDATED QUERY to include joins for seller names ---
+    base_query = db.session.query(
+        ProjectBilling, Project, SubscriptionPlan, Tier1Seller, Tier2Seller
+    ).select_from(ProjectBilling).join(
+        Project, ProjectBilling.project_id == Project.id
+    ).outerjoin(
+        SubscriptionPlan, Project.subscription_plan_id == SubscriptionPlan.id
+    ).outerjoin(
+        Tier1Seller, Project.tier1_seller_id == Tier1Seller.id
+    ).outerjoin(
+        Tier2Seller, Project.tier2_seller_id == Tier2Seller.id
+    )
 
-    # 2. Build the base query to join ProjectBilling with Project
-    base_query = ProjectBilling.query.join(Project, ProjectBilling.project_id == Project.id)
+    # --- Logic for Tier 1 Seller ---
+    if is_tier1(current_user):
+        tier1_project_details = []
+        tier2_project_details = []
 
-    # 3. Apply role-based filtering to the query
-    if is_admin(current_user):
-        # Admin sees everything, no additional filters needed.
-        bills = base_query.all()
-    
-    elif is_tier1(current_user):
-        # Tier 1 Seller sees their own projects AND projects of Tier 2 sellers they manage.
-        
-        # Get IDs of all Tier 2 sellers managed by this Tier 1 seller
         managed_tier2_ids = [
-            seller.id for seller in Tier2Seller.query.filter_by(tier1_seller_id=current_user['id']).all()
+            seller.id for seller in Tier2Seller.query.filter_by(tier1_seller_id=user_id).all()
         ]
         
-        bills = base_query.filter(
+        related_bills_query = base_query.filter(
             or_(
-                Project.tier1_seller_id == current_user['id'],
+                Project.tier1_seller_id == user_id,
                 Project.tier2_seller_id.in_(managed_tier2_ids)
             )
-        ).all()
-
-    elif is_tier2(current_user):
-        # Tier 2 Seller sees only their own projects.
-        bills = base_query.filter(Project.tier2_seller_id == current_user['id']).all()
-    
-    else:
-        # If user has no recognizable role, return no bills.
-        bills = []
+        )
         
-    # --- MODIFICATION END ---
+        for bill, project, plan, t1_seller, t2_seller in related_bills_query.all():
+            detail_data = {
+                "client_name": project.name if project else "Unknown",
+                "invoice_id": bill.invoice.invoice_number if bill.invoice else None,
+                "project_value": 0, "commission_percentage": None, "commission_amount": 0,
+                "due_date": bill.due_date.isoformat() if bill.due_date else None,
+                "status": ("Overdue" if bill.status in ["pending", "invoiced"] and bill.due_date and bill.due_date < date.today() else bill.status.capitalize()),
+                "payment_date": bill.invoice.paid_date.isoformat() if (bill.invoice and bill.invoice.paid_date) else None,
+                "admin_commission_percentage": None, "admin_commission_amount": 0
+            }
 
-    # The rest of the function processes the filtered `bills` list
-    total_bills = len(bills)
-    total_value = sum(float(b.amount) for b in bills)
+            if plan:
+                base_price = Decimal(plan.price)
+                detail_data["project_value"] = float(base_price)
 
-    paid_bills = [b for b in bills if b.status == 'paid']
-    pending_bills = [b for b in bills if b.status in ['pending', 'invoiced']]
-    overdue_bills = [
-        b for b in bills if b.status in ['pending', 'invoiced'] and b.due_date and b.due_date < date.today()
-    ]
+                if project.tier1_seller_id == user_id and not project.tier2_seller_id:
+                    if plan.admin_commission_pct is not None:
+                        pct = Decimal(plan.admin_commission_pct)
+                        detail_data["commission_percentage"] = float(pct)
+                        detail_data["commission_amount"] = float(base_price * (pct / 100))
+                    tier1_project_details.append(detail_data)
+                
+                elif project.tier2_seller_id in managed_tier2_ids:
+                    tier1_commission_earned = Decimal('0.0')
+                    if plan.tier1_commission_pct is not None:
+                        pct = Decimal(plan.tier1_commission_pct)
+                        detail_data["commission_percentage"] = float(pct)
+                        tier1_commission_earned = base_price * (pct / 100)
+                        detail_data["commission_amount"] = float(tier1_commission_earned)
+                    
+                    if plan.admin_commission_pct is not None:
+                        admin_pct = Decimal(plan.admin_commission_pct)
+                        detail_data["admin_commission_percentage"] = float(admin_pct)
+                        admin_commission_to_pay = tier1_commission_earned * (admin_pct / 100)
+                        detail_data["admin_commission_amount"] = float(admin_commission_to_pay)
+                    tier2_project_details.append(detail_data)
 
-    summary = {
-        "total_bills": total_bills,
-        "total_value": total_value,
-        "paid_bills": len(paid_bills),
-        "collected_amount": sum(float(b.amount) for b in paid_bills),
-        "pending_bills": len(pending_bills),
-        "outstanding_amount": sum(float(b.amount) for b in pending_bills),
-        "overdue_bills": len(overdue_bills)
-    }
+        return jsonify({
+            "tier1_project_billing": tier1_project_details,
+            "tier2_project_billing": tier2_project_details
+        }), 200
 
-    details = []
-    for bill in bills:
-        client_name = bill.project.name if bill.project and bill.project.name else "Unknown"
-        tier = "Tier-2" if bill.project and bill.project.tier2_seller_id else ("Tier-1" if bill.project and bill.project.tier1_seller_id else None)
+    # --- Logic for Admin ---
+    elif is_admin(current_user):
+        bills_result = base_query.all()
+        direct_revenue_details = []
+        indirect_revenue_details = []
 
-        details.append({
-            "client_name": client_name or "Unknown",
-            "invoice_id": bill.invoice.invoice_number if bill.invoice else None,
-            "bill_amount": float(bill.amount),
-            "due_date": bill.due_date.isoformat() if bill.due_date else None,
-            "status": (
-                "Overdue" if bill.status in ["pending", "invoiced"] and bill.due_date and bill.due_date < date.today()
-                else bill.status.capitalize()
-            ),
-            "payment_date": bill.invoice.paid_date.isoformat() if (bill.invoice and bill.invoice.paid_date) else None,
-            "tier": tier
-        })
+        for bill, project, plan, t1_seller, t2_seller in bills_result:
+            detail_data = {
+                "client_name": project.name if project else "Unknown",
+                "invoice_id": bill.invoice.invoice_number if bill.invoice else None,
+                "project_value": 0,
+                "due_date": bill.due_date.isoformat() if bill.due_date else None,
+                "status": ("Overdue" if bill.status in ["pending", "invoiced"] and bill.due_date and bill.due_date < date.today() else bill.status.capitalize()),
+                "payment_date": bill.invoice.paid_date.isoformat() if (bill.invoice and bill.invoice.paid_date) else None,
+            }
 
-    return jsonify({
-        "summary": summary,
-        "billing_details": details
-    }), 200
+            if plan:
+                base_price = Decimal(plan.price)
+                detail_data["project_value"] = float(base_price)
+
+                if project.tier1_seller_id and not project.tier2_seller_id:
+                    detail_data["seller_name"] = t1_seller.name if t1_seller else "N/A"
+                    if plan.admin_commission_pct is not None:
+                        pct = Decimal(plan.admin_commission_pct)
+                        detail_data["commission_percentage"] = float(pct)
+                        detail_data["commission_amount"] = float(base_price * (pct / 100))
+                    direct_revenue_details.append(detail_data)
+
+                elif project.tier2_seller_id:
+                    detail_data["tier1_seller_name"] = t1_seller.name if t1_seller else "N/A"
+                    detail_data["tier2_seller_name"] = t2_seller.name if t2_seller else "N/A"
+                    tier1_commission_earned = Decimal('0.0')
+                    
+                    if plan.tier1_commission_pct is not None:
+                        t1_pct = Decimal(plan.tier1_commission_pct)
+                        tier1_commission_earned = base_price * (t1_pct / 100)
+                        detail_data["tier1_commission_amount"] = float(tier1_commission_earned)
+
+                    if plan.admin_commission_pct is not None:
+                        admin_pct = Decimal(plan.admin_commission_pct)
+                        admin_share = tier1_commission_earned * (admin_pct / 100)
+                        detail_data["admin_commission_amount"] = float(admin_share)
+                    indirect_revenue_details.append(detail_data)
+        
+        return jsonify({
+            "summary": { "total_bills": len(bills_result) },
+            "direct_revenue_details": direct_revenue_details,
+            "indirect_revenue_details": indirect_revenue_details
+        }), 200
+
+    # --- Logic for Tier 2 Seller ---
+    elif is_tier2(current_user):
+        bills_result = base_query.filter(Project.tier2_seller_id == user_id).all()
+        
+        summary = { "total_bills": len(bills_result) }
+        details = []
+        for bill, project, plan, t1_seller, t2_seller in bills_result:
+            project_value = float(bill.amount)
+            commission_pct = None
+            commission_amount = 0
+
+            if plan:
+                base_price = Decimal(plan.price)
+                project_value = float(base_price)
+                if plan.tier1_commission_pct is not None:
+                    pct_to_use = Decimal(plan.tier1_commission_pct)
+                    commission_pct = float(pct_to_use)
+                    commission_amount = float(base_price * (pct_to_use / 100))
+
+            details.append({
+                "client_name": project.name if project else "Unknown",
+                "invoice_id": bill.invoice.invoice_number if bill.invoice else None,
+                "project_value": project_value,
+                "commission_percentage": commission_pct,
+                "commission_amount": commission_amount,
+                "due_date": bill.due_date.isoformat() if bill.due_date else None,
+                "status": ("Overdue" if bill.status in ["pending", "invoiced"] and bill.due_date and bill.due_date < date.today() else bill.status.capitalize()),
+                "payment_date": bill.invoice.paid_date.isoformat() if (bill.invoice and bill.invoice.paid_date) else None,
+            })
+        
+        return jsonify({ "summary": summary, "billing_details": details }), 200
+    
+    # Fallback for any other user type
+    else:
+        return jsonify({ "summary": {}, "billing_details": [] }), 200
