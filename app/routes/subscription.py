@@ -85,29 +85,82 @@ def subscribe_to_plan():
     db.session.commit()
     return jsonify({'message': 'Subscribed successfully', 'subscription_id': new_subscription.id}), 201
 
-# ------------------ GET PLANS ------------------
+# # ------------------ GET PLANS ------------------
+# @subscription_bp.route('/plans', methods=['GET'])
+# @jwt_required()
+# def get_plans():
+#     current_user = get_current_user(get_jwt_identity())
+    
+#     if is_tier1(current_user):
+#         # Tier1 can see Admin plans to subscribe to
+#         plans = SubscriptionPlan.query.filter_by(creator_type='admin').all()
+#     elif is_tier2(current_user):
+#         # Tier2 can see plans created by their Tier1 parent
+#         tier2_seller = Tier2Seller.query.get(current_user['id'])
+#         plans = SubscriptionPlan.query.filter_by(creator_id=tier2_seller.tier1_seller_id, creator_type='tier1_seller').all()
+#     else:
+#         # Admin can see all plans
+#         plans = SubscriptionPlan.query.all()
+
+#     return jsonify([{
+#         'id': plan.id,
+#         'name': plan.name,
+#         'price': str(plan.price),
+#         'creator_type': plan.creator_type
+#     } for plan in plans]), 200
+
 @subscription_bp.route('/plans', methods=['GET'])
 @jwt_required()
 def get_plans():
     current_user = get_current_user(get_jwt_identity())
-    
-    if is_tier1(current_user):
-        # Tier1 can see Admin plans to subscribe to
-        plans = SubscriptionPlan.query.filter_by(creator_type='admin').all()
-    elif is_tier2(current_user):
-        # Tier2 can see plans created by their Tier1 parent
-        tier2_seller = Tier2Seller.query.get(current_user['id'])
-        plans = SubscriptionPlan.query.filter_by(creator_id=tier2_seller.tier1_seller_id, creator_type='tier1_seller').all()
-    else:
-        # Admin can see all plans
+
+    # ---------------- Admin ----------------
+    if is_admin(current_user):
         plans = SubscriptionPlan.query.all()
 
-    return jsonify([{
-        'id': plan.id,
-        'name': plan.name,
-        'price': str(plan.price),
-        'creator_type': plan.creator_type
-    } for plan in plans]), 200
+    # ---------------- Tier1 Seller ----------------
+    elif is_tier1(current_user):
+        # Tier1 must see Admin plans + their own plans
+        admin_plans = SubscriptionPlan.query.filter_by(creator_type='admin').all()
+        tier1_own_plans = SubscriptionPlan.query.filter_by(
+            creator_id=current_user['id'],
+            creator_type='tier1_seller'
+        ).all()
+        plans = admin_plans + tier1_own_plans
+
+    # ---------------- Tier2 Seller ----------------
+    elif is_tier2(current_user):
+        tier2_seller = Tier2Seller.query.get(current_user['id'])
+        if not tier2_seller:
+            return jsonify({'message': 'Tier2 seller not found'}), 404
+
+        # Tier2 should ONLY see Tier1-created plans from their parent Tier1 seller
+        plans = SubscriptionPlan.query.filter(
+            SubscriptionPlan.creator_id == tier2_seller.tier1_seller_id,
+            SubscriptionPlan.creator_type == 'tier1_seller'
+        ).all()
+
+    # ---------------- Others ----------------
+    else:
+        return jsonify({'message': 'Unauthorized role'}), 403
+
+    # ---------------- Response ----------------
+    return jsonify([
+        {
+            'id': plan.id,
+            'name': plan.name,
+            'price': str(plan.price),
+            'creator_type': plan.creator_type,
+            'creator_id': plan.creator_id,
+            'billing_cycle': plan.billing_cycle,
+            'description': plan.description,
+            'admin_commission_pct': str(plan.admin_commission_pct) if plan.admin_commission_pct else None,
+            'tier1_commission_pct': str(plan.tier1_commission_pct) if plan.tier1_commission_pct else None,
+            'parent_plan_id': plan.parent_plan_id
+        }
+        for plan in plans
+    ]), 200
+
 
 
 # ------------------ GET, UPDATE, DELETE SINGLE PLAN ------------------

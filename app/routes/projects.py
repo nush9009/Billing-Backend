@@ -174,6 +174,34 @@ def get_project(project_id):
         'clients': [{'id': c.id, 'name': c.name, 'company': c.company} for c in project.clients]
     }), 200
 
+# @projects_bp.route('/', methods=['POST'])
+# @jwt_required()
+# def create_project():
+#     current_user = get_current_user(get_jwt_identity())
+#     user_id = current_user.get('id')
+
+#     if not (is_admin(current_user) or is_tier1(current_user) or is_tier2(current_user)):
+#         return jsonify({'message': 'Access denied'}), 403
+
+#     data = request.get_json()
+#     tier1_seller_id = data.get('tier1_seller_id') if is_admin(current_user) else (user_id if is_tier1(current_user) else None)
+#     tier2_seller_id = data.get('tier2_seller_id') if is_admin(current_user) or is_tier1(current_user) else (user_id if is_tier2(current_user) else None)
+
+#     new_project = Project(
+#         name=data.get('name'),
+#         status=data.get('status', 'active'),
+#         project_type=data.get('project_type'),
+#         description=data.get('description'),
+#         project_value=data.get('project_value'),
+#         billing_frequency=data.get('billing_frequency', 'milestone'),
+#         hourly_budget=data.get('hourly_budget'),
+#         tier1_seller_id=tier1_seller_id,
+#         tier2_seller_id=tier2_seller_id
+#     )
+#     db.session.add(new_project)
+#     db.session.commit()
+#     return jsonify({'message': 'Project created successfully', 'id': new_project.id}), 201
+
 @projects_bp.route('/', methods=['POST'])
 @jwt_required()
 def create_project():
@@ -184,6 +212,20 @@ def create_project():
         return jsonify({'message': 'Access denied'}), 403
 
     data = request.get_json()
+    subscription_plan_id = data.get('subscription_plan_id')
+    subscription_plan_name = data.get('subscription_plan_name')
+
+    if not subscription_plan_id and not subscription_plan_name:
+        return jsonify({'message': 'A subscription_plan_id or subscription_plan_name is required'}), 400
+
+    # If only name is given, fetch id
+    if not subscription_plan_id and subscription_plan_name:
+        plan = SubscriptionPlan.query.filter_by(name=subscription_plan_name).first()
+        if not plan:
+            return jsonify({'message': f'Subscription plan "{subscription_plan_name}" not found'}), 404
+        subscription_plan_id = plan.id
+
+
     tier1_seller_id = data.get('tier1_seller_id') if is_admin(current_user) else (user_id if is_tier1(current_user) else None)
     tier2_seller_id = data.get('tier2_seller_id') if is_admin(current_user) or is_tier1(current_user) else (user_id if is_tier2(current_user) else None)
 
@@ -192,15 +234,16 @@ def create_project():
         status=data.get('status', 'active'),
         project_type=data.get('project_type'),
         description=data.get('description'),
-        project_value=data.get('project_value'),
         billing_frequency=data.get('billing_frequency', 'milestone'),
         hourly_budget=data.get('hourly_budget'),
         tier1_seller_id=tier1_seller_id,
-        tier2_seller_id=tier2_seller_id
+        tier2_seller_id=tier2_seller_id,
+        subscription_plan_id=subscription_plan_id
     )
     db.session.add(new_project)
     db.session.commit()
     return jsonify({'message': 'Project created successfully', 'id': new_project.id}), 201
+
 
 @projects_bp.route('/<project_id>', methods=['PUT', 'PATCH'])
 @jwt_required()
