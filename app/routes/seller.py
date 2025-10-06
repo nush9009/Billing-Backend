@@ -72,7 +72,10 @@ def get_tier1_sellers():
         # Count projects under this Tier1 seller (client_count means project_count here)
         client_count = (
             db.session.query(Project)
-            .filter(Project.tier1_seller_id == s.id)
+            .filter(
+                Project.tier1_seller_id == s.id,
+                Project.tier2_seller_id.is_(None)  # ADD THIS CONDITION
+            )
             .count()
         )
 
@@ -80,7 +83,7 @@ def get_tier1_sellers():
         revenue = (
             db.session.query(func.coalesce(func.sum(ProjectBilling.amount), 0))
             .join(Project, ProjectBilling.project_id == Project.id)
-            .filter(Project.tier1_seller_id == s.id, ProjectBilling.status == 'paid')
+            .filter(Project.tier1_seller_id == s.id,Project.tier2_seller_id.is_(None), ProjectBilling.status == 'paid')
             .scalar()
         )
 

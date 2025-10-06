@@ -132,6 +132,37 @@ def get_project_bills(project_id):
     ]), 200
 
 
+# ---------------- DELETE ALL BILLS (AND INVOICES) FOR A PROJECT ----------------
+@billing_bp.route('/project/<project_id>/bills/delete', methods=['DELETE'])
+@jwt_required_custom
+def delete_project_bills(project_id):
+    """Delete all bills (and their invoices) related to a project."""
+    project = Project.query.get(project_id)
+    if not project:
+        return jsonify({'message': 'Project not found'}), 404
+
+    try:
+        bills = ProjectBilling.query.filter_by(project_id=project_id).all()
+        if not bills:
+            return jsonify({'message': 'No bills found for this project'}), 404
+
+        for bill in bills:
+            # Delete associated invoice if exists
+            if bill.invoice:
+                db.session.delete(bill.invoice)
+            
+            # Delete the bill itself
+            db.session.delete(bill)
+
+        db.session.commit()
+        return jsonify({'message': f'All bills (and invoices) for project {project_id} have been deleted'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': f'Error deleting bills: {str(e)}'}), 500
+
+
+
 from sqlalchemy import or_ # <-- 
 
 # ... (all other routes remain the same) ...
