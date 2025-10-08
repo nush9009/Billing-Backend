@@ -8,6 +8,7 @@ from flask_marshmallow import Marshmallow
 from flask import send_from_directory, send_file, request
 import os
 from pathlib import Path
+from flask_apscheduler import APScheduler 
 
 
 db = SQLAlchemy()
@@ -19,7 +20,6 @@ ma = Marshmallow()
 def create_app():
     app = Flask(__name__)
     
-    # Load configuration
     app.config.from_object('app.config.Config')
     
     # Initialize extensions
@@ -29,6 +29,23 @@ def create_app():
     CORS(app)
     bcrypt.init_app(app)
     ma.init_app(app)
+    scheduler = APScheduler()
+    scheduler.init_app(app)
+
+    with app.app_context():
+        # Import the task function within the context
+        from . import tasks
+        # Add the job if it doesn't already exist
+        if not scheduler.get_job('monthly-billing'):
+            scheduler.add_job(
+                id='monthly-billing',
+                func=tasks.generate_monthly_invoices,
+                trigger='cron',
+                hour=5, # Runs at 5:00 AM UTC every day
+                minute=0
+            )
+    
+    scheduler.start()
     
     # UPDATED: Import the renamed models
     from app.models import Tier1Seller, Tier2Seller, Admin, Project, Client

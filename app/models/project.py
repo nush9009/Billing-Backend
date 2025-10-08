@@ -1,5 +1,5 @@
 from app import db
-from datetime import datetime
+from datetime import datetime,date
 import uuid
 
 # class Project(db.Model):
@@ -95,32 +95,81 @@ from app import db
 from datetime import datetime
 import uuid
 
+# class Project(db.Model):
+#     __tablename__ = 'projects'
+    
+#     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+#     name = db.Column(db.String(255), nullable=False)
+#     status = db.Column(db.String(20), default='active')
+#     project_type = db.Column(db.String(100))
+#     description = db.Column(db.Text)
+#     start_date = db.Column(db.Date)
+#     end_date = db.Column(db.Date)
+#     billing_frequency = db.Column(db.String(20), default='milestone')
+#     hourly_budget = db.Column(db.Numeric(8, 2))
+#     hours_used = db.Column(db.Numeric(8, 2), default=0)
+#     budget_spent = db.Column(db.Numeric(12, 2), default=0)
+#     admin_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=True) 
+#     tier1_seller_id = db.Column(db.String(36), db.ForeignKey('tier1_sellers.id'), nullable=True)
+#     tier2_seller_id = db.Column(db.String(36), db.ForeignKey('tier2_sellers.id'), nullable=True)
+#     subscription_plan_id = db.Column(db.String(36), db.ForeignKey('subscription_plans.id'), nullable=True)
+#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+#     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+#     status = db.Column(db.String(50), default='active', nullable=False)
+#     billing_day_of_month = db.Column(db.Integer, default=1, nullable=False)
+#     next_billing_date = db.Column(db.Date, default=date.today, nullable=False)
+
+#     # Relationships
+#     clients = db.relationship('Client', backref='project', lazy=True)
+#     subscription_plan = db.relationship('SubscriptionPlan', backref='projects')
+
+# app/models/project.py
+
+from app import db
+from datetime import datetime, date  # <-- ADD 'date' IMPORT
+import uuid
+
 class Project(db.Model):
     __tablename__ = 'projects'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = db.Column(db.String(255), nullable=False)
-    status = db.Column(db.String(20), default='active')
+    
+    # --- CORRECTED STATUS COLUMN ---
+    # We will use this single 'status' column for everything.
+    # The duplicate has been removed.
+    status = db.Column(db.String(50), default='active', nullable=False) 
+    
     project_type = db.Column(db.String(100))
     description = db.Column(db.Text)
     start_date = db.Column(db.Date)
     end_date = db.Column(db.Date)
-    billing_frequency = db.Column(db.String(20), default='milestone')
+    
+    # This field seems redundant if you have subscription plans, but we'll leave it for now.
+    billing_frequency = db.Column(db.String(20), default='milestone') 
+    
     hourly_budget = db.Column(db.Numeric(8, 2))
     hours_used = db.Column(db.Numeric(8, 2), default=0)
     budget_spent = db.Column(db.Numeric(12, 2), default=0)
+    
     admin_id = db.Column(db.String(36), db.ForeignKey('admins.id'), nullable=True) 
     tier1_seller_id = db.Column(db.String(36), db.ForeignKey('tier1_sellers.id'), nullable=True)
     tier2_seller_id = db.Column(db.String(36), db.ForeignKey('tier2_sellers.id'), nullable=True)
     subscription_plan_id = db.Column(db.String(36), db.ForeignKey('subscription_plans.id'), nullable=True)
+    
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Relationships
+    # --- AUTOMATED BILLING FIELDS ---
+    # These are correct as defined.
+    billing_day_of_month = db.Column(db.Integer, default=1, nullable=False)
+    next_billing_date = db.Column(db.Date, default=date.today, nullable=False)
+
+    # --- RELATIONSHIPS ---
     clients = db.relationship('Client', backref='project', lazy=True)
     subscription_plan = db.relationship('SubscriptionPlan', backref='projects')
-
-
+    # The 'billing_records' backref is already set up correctly by ProjectBilling model.
 
 class Client(db.Model):
     __tablename__ = 'clients'

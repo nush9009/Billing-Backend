@@ -1,23 +1,29 @@
-# billing_routes.py (API Endpoints)
+# app/routes/billing.py
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from app import db
 from app.utils.auth import jwt_required_custom
-from app.models import Project, Client
+from app.models import Project
+from app.models.project import Client
 from app.models.billing import ProjectBilling, Invoice
-from app.models.seller import Tier2Seller
+from app.models.seller import Tier1Seller, Tier2Seller
 from datetime import date, timedelta
 import uuid
 from decimal import Decimal
-from app.routes.projects import get_current_user,get_jwt_identity,is_admin,is_tier1,is_tier2
+import stripe # <-- ADD IMPORT
 
 billing_bp = Blueprint('billing', __name__)
 
-# ---------------- CREATE A BILL ----------------
+# It's a good practice to set your Stripe key from your app config
+# This will be done when the app is created, but for clarity:
+# stripe.api_key = current_app.config['STRIPE_SECRET_KEY']
+
+
+# ---------------- CREATE A BILL (NO CHANGE) ----------------
 @billing_bp.route('/bill/create', methods=['POST'])
 @jwt_required_custom
 def create_bill():
-    """Create a new bill (ProjectBilling record) for a project."""
+    # ... this function remains exactly the same
     data = request.get_json()
     project_id = data.get('project_id')
     
@@ -30,7 +36,7 @@ def create_bill():
         billing_type=data.get('billing_type', 'General'),
         amount=Decimal(data.get('amount', 0)),
         description=data.get('description'),
-        status='pending', # Starts as pending
+        status='pending',
         due_date=data.get('due_date')
     )
     db.session.add(new_bill)
@@ -41,13 +47,11 @@ def create_bill():
         'bill_id': new_bill.id
     }), 201
 
-# ---------------- GENERATE INVOICE FROM A BILL ----------------
-# billing_routes.py (API Endpoint)
-
+# ---------------- GENERATE INVOICE FROM A BILL (NO CHANGE) ----------------
 @billing_bp.route('/invoice/generate', methods=['POST'])
 @jwt_required_custom
 def generate_invoice_from_bill():
-    """Generate a single invoice from a single pending bill."""
+    # ... this function remains exactly the same
     data = request.get_json()
     bill_id = data.get('bill_id')
     if not bill_id:
@@ -59,13 +63,10 @@ def generate_invoice_from_bill():
     if bill.status != 'pending':
         return jsonify({'message': f'Bill is not pending. Current status: {bill.status}'}), 400
 
-    # REMOVED: Logic to find the client is no longer necessary.
-    # The invoice is strictly tied to the project.
-
     try:
         new_invoice = Invoice(
             billing_record_id=bill.id,
-            project_id=bill.project_id, # Link directly to the project
+            project_id=bill.project_id,
             invoice_number=f"INV-{uuid.uuid4().hex[:6].upper()}",
             total_amount=bill.amount,
             issue_date=date.today(),
@@ -87,33 +88,172 @@ def generate_invoice_from_bill():
         db.session.rollback()
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
-# ---------------- MARK INVOICE AS PAID ----------------
+
+# ---------------- [NEW] INITIATE PAYMENT FOR AN INVOICE ----------------
+@billing_bp.route('/invoice/<invoice_id>/initiate-payment', methods=['POST'])
+@jwt_required_custom
+def initiate_invoice_payment(invoice_id):
+    """
+    Creates a Stripe Payment Intent for an invoice to start the payment process.
+    """
+    stripe.api_key = current_app.config['STRIPE_SECRET_KEY']
+    invoice = Invoice.query.get(invoice_id)
+    
+    if not invoice:
+        return jsonify({'message': 'Invoice not found'}), 404
+    if invoice.status not in ['draft', 'sent']:
+        return jsonify({'message': f'Invoice cannot be paid. Status: {invoice.status}'}), 400
+    if invoice.stripe_payment_intent_id:
+        try:
+            intent = stripe.PaymentIntent.retrieve(invoice.stripe_payment_intent_id)
+            return jsonify({'client_secret': intent.client_secret})
+        except stripe.error.StripeError:
+            # If retrieve fails, create a new one
+            pass
+
+    project = invoice.project
+    plan = project.subscription_plan
+    if not plan:
+        return jsonify({'message': 'Project has no subscription plan configured'}), 500
+    
+    amount_in_cents = int(invoice.total_amount * 100)
+
+    try:
+        payment_intent_params = {
+            'amount': amount_in_cents,
+            'currency': 'usd',
+            'payment_method_types': ['card'],
+            'metadata': {
+                'invoice_id': invoice.id,
+                'project_id': project.id
+            }
+        }
+        
+        # --- SPLIT LOGIC ---
+        if project.tier1_seller_id and not project.tier2_seller_id:
+            tier1_seller = project.tier1_seller
+            if not tier1_seller or not tier1_seller.stripe_account_id:
+                return jsonify({'message': 'Tier-1 Seller is not configured for payments'}), 500
+            
+            admin_pct = Decimal(plan.admin_commission_pct or 0)
+            fee_amount = int(amount_in_cents * (admin_pct / 100))
+            
+            payment_intent_params.update({
+                'application_fee_amount': fee_amount,
+                'transfer_data': {'destination': tier1_seller.stripe_account_id}
+            })
+
+        elif project.tier2_seller_id:
+            if not project.tier1_seller or not project.tier1_seller.stripe_account_id or \
+               not project.tier2_seller or not project.tier2_seller.stripe_account_id:
+                return jsonify({'message': 'One or more sellers are not configured for payments'}), 500
+            
+            payment_intent_params['transfer_group'] = f'group_{invoice.id}'
+
+        intent = stripe.PaymentIntent.create(**payment_intent_params)
+
+        invoice.stripe_payment_intent_id = intent.id
+        db.session.commit()
+
+        return jsonify({'client_secret': intent.client_secret}), 200
+
+    except Exception as e:
+        return jsonify({'message': f'Stripe Error: {str(e)}'}), 500
+
+
+# ---------------- [NEW] STRIPE WEBHOOK FOR PAYMENT CONFIRMATION ----------------
+@billing_bp.route('/stripe-webhook', methods=['POST'])
+def stripe_webhook():
+    """
+    Listens for events from Stripe to automatically update invoice status.
+    This replaces the manual "mark_paid" endpoint.
+    """
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+    endpoint_secret = current_app.config['STRIPE_WEBHOOK_SECRET']
+    
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+    except ValueError:
+        return 'Invalid payload', 400
+    except stripe.error.SignatureVerificationError:
+        return 'Invalid signature', 400
+
+    if event['type'] == 'payment_intent.succeeded':
+        intent = event['data']['object']
+        invoice_id = intent.get('metadata', {}).get('invoice_id')
+        if not invoice_id:
+            return 'Missing invoice_id in metadata', 400
+        
+        with db.session.begin():
+            invoice = Invoice.query.filter_by(id=invoice_id).first()
+            if invoice and invoice.status != 'paid':
+                invoice.status = 'paid'
+                invoice.paid_date = date.today()
+                if invoice.billing_record:
+                    invoice.billing_record.status = 'paid'
+                
+                project = invoice.project
+                if project and project.tier2_seller_id:
+                    handle_tier2_transfers(intent, project)
+
+    elif event['type'] == 'payment_intent.payment_failed':
+        intent = event['data']['object']
+        invoice_id = intent.get('metadata', {}).get('invoice_id')
+        if invoice_id:
+            with db.session.begin():
+                invoice = Invoice.query.filter_by(id=invoice_id).first()
+                if invoice:
+                    invoice.status = 'failed'
+            
+    return jsonify({'status': 'success'}), 200
+
+def handle_tier2_transfers(payment_intent, project):
+    """Helper function to create transfers after a T2 payment succeeds."""
+    stripe.api_key = current_app.config['STRIPE_SECRET_KEY']
+    plan = project.subscription_plan
+    if not plan: return
+    
+    base_price_cents = payment_intent['amount']
+    
+    tier1_pct = Decimal(plan.tier1_commission_pct or 0)
+    admin_pct = Decimal(plan.admin_commission_pct or 0)
+
+    tier1_commission = base_price_cents * (tier1_pct / 100)
+    tier2_share = base_price_cents - tier1_commission
+    admin_share_of_tier1_commission = tier1_commission * (admin_pct / 100)
+    
+    # Transfer Tier 2's share
+    stripe.Transfer.create(
+        amount=int(tier2_share),
+        currency='usd',
+        destination=project.tier2_seller.stripe_account_id,
+        source_transaction=payment_intent.get('latest_charge'),
+        transfer_group=payment_intent['transfer_group']
+    )
+    # Transfer Tier 1's commission (after admin takes their cut)
+    stripe.Transfer.create(
+        amount=int(tier1_commission - admin_share_of_tier1_commission),
+        currency='usd',
+        destination=project.tier1_seller.stripe_account_id,
+        source_transaction=payment_intent.get('latest_charge'),
+        transfer_group=payment_intent['transfer_group']
+    )
+
+# ---------------- [DEPRECATED] MARK INVOICE AS PAID ----------------
+# It's recommended to remove this endpoint entirely.
+# The webhook now handles payment confirmation automatically and securely.
 @billing_bp.route('/invoice/<invoice_id>/mark_paid', methods=['POST'])
 @jwt_required_custom
 def mark_invoice_paid(invoice_id):
-    """Mark an invoice and its associated bill as paid."""
-    invoice = Invoice.query.get(invoice_id)
-    if not invoice:
-        return jsonify({'message': 'Invoice not found'}), 404
-    if invoice.status == 'paid':
-        return jsonify({'message': 'Invoice is already marked as paid'}), 400
+    return jsonify({'message': 'This endpoint is deprecated. Payment status is updated via Stripe webhook.'}), 410
 
-    # Update invoice status
-    invoice.status = 'paid'
-    invoice.paid_date = date.today()
 
-    # Update the original bill's status via the relationship
-    if invoice.billing_record:
-        invoice.billing_record.status = 'paid'
-
-    db.session.commit()
-    return jsonify({'message': f'Invoice {invoice.invoice_number} marked as paid.'}), 200
-
-# ---------------- GET ALL BILLS FOR A PROJECT (PAID/UNPAID VIEW) ----------------
+# ---------------- GET ALL BILLS FOR A PROJECT (NO CHANGE) ----------------
 @billing_bp.route('/project/<project_id>/bills', methods=['GET'])
 @jwt_required_custom
 def get_project_bills(project_id):
-    """Get all billing records for a project, showing paid/unpaid status."""
+    # ... this function remains exactly the same
     project = Project.query.get(project_id)
     if not project:
         return jsonify({'message': 'Project not found'}), 404
@@ -125,18 +265,17 @@ def get_project_bills(project_id):
             'bill_id': bill.id,
             'amount': float(bill.amount),
             'description': bill.description,
-            'status': bill.status, # This is the key field for paid/unpaid status
+            'status': bill.status,
             'due_date': bill.due_date.isoformat() if bill.due_date else None,
             'invoice_id': bill.invoice.id if bill.invoice else None
         } for bill in bills
     ]), 200
 
-
-# ---------------- DELETE ALL BILLS (AND INVOICES) FOR A PROJECT ----------------
+# ---------------- DELETE ALL BILLS (AND INVOICES) FOR A PROJECT (NO CHANGE) ----------------
 @billing_bp.route('/project/<project_id>/bills/delete', methods=['DELETE'])
 @jwt_required_custom
 def delete_project_bills(project_id):
-    """Delete all bills (and their invoices) related to a project."""
+    # ... this function remains exactly the same
     project = Project.query.get(project_id)
     if not project:
         return jsonify({'message': 'Project not found'}), 404
@@ -147,11 +286,8 @@ def delete_project_bills(project_id):
             return jsonify({'message': 'No bills found for this project'}), 404
 
         for bill in bills:
-            # Delete associated invoice if exists
             if bill.invoice:
                 db.session.delete(bill.invoice)
-            
-            # Delete the bill itself
             db.session.delete(bill)
 
         db.session.commit()
@@ -160,8 +296,6 @@ def delete_project_bills(project_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': f'Error deleting bills: {str(e)}'}), 500
-
-
 
 from sqlalchemy import or_ # <-- 
 
