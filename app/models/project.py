@@ -167,6 +167,9 @@ class Project(db.Model):
     next_billing_date = db.Column(db.Date, default=date.today, nullable=False)
 
     # --- RELATIONSHIPS ---
+    tier1_seller = db.relationship('Tier1Seller', backref='projects_tier1', foreign_keys=[tier1_seller_id])
+    tier2_seller = db.relationship('Tier2Seller', backref='projects_tier2', foreign_keys=[tier2_seller_id])
+
     clients = db.relationship('Client', backref='project', lazy=True)
     subscription_plan = db.relationship('SubscriptionPlan', backref='projects')
     # The 'billing_records' backref is already set up correctly by ProjectBilling model.

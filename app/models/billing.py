@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import uuid
 from decimal import Decimal
 from app.models import Project
-
+from sqlalchemy.dialects.postgresql import JSONB
 
 
 class ProjectBilling(db.Model):
@@ -46,12 +46,12 @@ class Invoice(db.Model):
     issue_date = db.Column(db.Date, nullable=False)
     due_date = db.Column(db.Date, nullable=False)
     paid_date = db.Column(db.Date)
-    
+    transfer_data = db.Column(JSONB, nullable=True) 
     notes = db.Column(db.Text)
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+    stripe_payment_intent_id = db.Column(db.String(255), nullable=True, index=True)
     # Relationships
     billing_record = db.relationship('ProjectBilling', back_populates='invoice')
     project = db.relationship('Project')

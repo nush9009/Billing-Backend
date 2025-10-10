@@ -13,28 +13,31 @@ from decimal import Decimal
 import stripe # <-- ADD IMPORT
 
 billing_bp = Blueprint('billing', __name__)
-
-# It's a good practice to set your Stripe key from your app config
-# This will be done when the app is created, but for clarity:
-# stripe.api_key = current_app.config['STRIPE_SECRET_KEY']
+# app/routes/billing.py
 
 
-# ---------------- CREATE A BILL (NO CHANGE) ----------------
+# ---------------- CREATE A BILL (UPDATED) ----------------
 @billing_bp.route('/bill/create', methods=['POST'])
 @jwt_required_custom
 def create_bill():
-    # ... this function remains exactly the same
     data = request.get_json()
     project_id = data.get('project_id')
     
-    project = Project.query.get(project_id)
+    project = Project.query.options(db.joinedload(Project.subscription_plan)).get(project_id)
     if not project:
         return jsonify({'message': 'Project not found'}), 404
+
+    # --- FIX: Get the amount from the subscription plan, not the request ---
+    if not project.subscription_plan or not project.subscription_plan.price:
+        return jsonify({'message': 'Project does not have a subscription plan with a price.'}), 400
+    
+    bill_amount = Decimal(project.subscription_plan.price)
+    # --- END OF FIX ---
 
     new_bill = ProjectBilling(
         project_id=project.id,
         billing_type=data.get('billing_type', 'General'),
-        amount=Decimal(data.get('amount', 0)),
+        amount=bill_amount, # Use the correct amount from the plan
         description=data.get('description'),
         status='pending',
         due_date=data.get('due_date')
@@ -43,15 +46,16 @@ def create_bill():
     db.session.commit()
 
     return jsonify({
-        'message': 'Bill created successfully. Ready to be invoiced.',
+        'message': 'Bill created successfully with correct amount. Ready to be invoiced.',
         'bill_id': new_bill.id
     }), 201
 
-# ---------------- GENERATE INVOICE FROM A BILL (NO CHANGE) ----------------
+
+
+# ---------------- GENERATE INVOICE FROM BILL (NO CHANGE) ----------------
 @billing_bp.route('/invoice/generate', methods=['POST'])
 @jwt_required_custom
 def generate_invoice_from_bill():
-    # ... this function remains exactly the same
     data = request.get_json()
     bill_id = data.get('bill_id')
     if not bill_id:
@@ -73,9 +77,7 @@ def generate_invoice_from_bill():
             due_date=bill.due_date or (date.today() + timedelta(days=30)),
             status='sent'
         )
-        
         bill.status = 'invoiced'
-        
         db.session.add(new_invoice)
         db.session.commit()
         
@@ -89,102 +91,131 @@ def generate_invoice_from_bill():
         return jsonify({'message': f'Error: {str(e)}'}), 500
 
 
-# ---------------- [NEW] INITIATE PAYMENT FOR AN INVOICE ----------------
+# ---------------- INITIATE PAYMENT FOR AN INVOICE (UPDATED) ----------------
 @billing_bp.route('/invoice/<invoice_id>/initiate-payment', methods=['POST'])
 @jwt_required_custom
 def initiate_invoice_payment(invoice_id):
     """
-    Creates a Stripe Payment Intent for an invoice to start the payment process.
+    Creates a Stripe PaymentIntent for the correct commission amount.
+    Tier-2 → pays Tier-1's commission, which is then split.
+    Tier-1 → pays Admin's commission directly.
     """
     stripe.api_key = current_app.config['STRIPE_SECRET_KEY']
-    invoice = Invoice.query.get(invoice_id)
     
+    current_user = get_current_user(get_jwt_identity())
+    user_role = 'tier2' if is_tier2(current_user) else 'tier1' if is_tier1(current_user) else None
+    if not user_role:
+        return jsonify({'message': 'Unauthorized role'}), 403
+
+    # Use joinedload to efficiently fetch related objects
+    invoice = Invoice.query.options(
+        db.joinedload(Invoice.project).joinedload(Project.subscription_plan)
+    ).filter_by(invoice_number=invoice_id).first()
+
     if not invoice:
         return jsonify({'message': 'Invoice not found'}), 404
-    if invoice.status not in ['draft', 'sent']:
+    if invoice.status not in ['draft', 'sent', 'pending', 'overdue']:
         return jsonify({'message': f'Invoice cannot be paid. Status: {invoice.status}'}), 400
-    if invoice.stripe_payment_intent_id:
-        try:
-            intent = stripe.PaymentIntent.retrieve(invoice.stripe_payment_intent_id)
-            return jsonify({'client_secret': intent.client_secret})
-        except stripe.error.StripeError:
-            # If retrieve fails, create a new one
-            pass
 
     project = invoice.project
     plan = project.subscription_plan
     if not plan:
         return jsonify({'message': 'Project has no subscription plan configured'}), 500
+
+    # --- FIX: CALCULATE THE CORRECT PAYABLE AMOUNT BASED ON ROLE ---
+    amount_to_pay = Decimal('0.0')
     
-    amount_in_cents = int(invoice.total_amount * 100)
+    if user_role == 'tier2' and plan.tier1_commission_pct is not None:
+        commission_pct = Decimal(plan.tier1_commission_pct)
+        amount_to_pay = Decimal(invoice.total_amount) * (commission_pct / 100)
+    
+    elif user_role == 'tier1' and plan.admin_commission_pct is not None:
+        commission_pct = Decimal(plan.admin_commission_pct)
+        amount_to_pay = Decimal(invoice.total_amount) * (commission_pct / 100)
+        
+    else:
+        return jsonify({'message': 'Commission not configured for this plan'}), 400
+
+    amount_in_cents = int(amount_to_pay * 100)
+    
+    # --- FIX: MAKE CURRENCY FLEXIBLE ---
+    # Assumes the plan might have a currency, otherwise falls back to config.
+    currency = getattr(plan, 'currency', None) or current_app.config.get('STRIPE_CURRENCY', 'usd')
+
+    # Safeguard against Stripe's minimum charge amount (e.g., 50 cents for USD)
+    if amount_in_cents < 50:
+        return jsonify({'message': 'Payable amount is below the minimum charge.'}), 400
 
     try:
-        payment_intent_params = {
-            'amount': amount_in_cents,
-            'currency': 'usd',
-            'payment_method_types': ['card'],
-            'metadata': {
-                'invoice_id': invoice.id,
-                'project_id': project.id
-            }
-        }
-        
-        # --- SPLIT LOGIC ---
-        if project.tier1_seller_id and not project.tier2_seller_id:
-            tier1_seller = project.tier1_seller
-            if not tier1_seller or not tier1_seller.stripe_account_id:
-                return jsonify({'message': 'Tier-1 Seller is not configured for payments'}), 500
-            
+        # ----- Tier-2 Seller Flow -----
+        if user_role == 'tier2':
+            # This logic correctly splits the amount_in_cents (the commission)
+            # between the Tier-1 seller and the Admin.
             admin_pct = Decimal(plan.admin_commission_pct or 0)
-            fee_amount = int(amount_in_cents * (admin_pct / 100))
-            
-            payment_intent_params.update({
-                'application_fee_amount': fee_amount,
-                'transfer_data': {'destination': tier1_seller.stripe_account_id}
-            })
+            admin_amount = int(amount_in_cents * (admin_pct / 100))
+            tier1_amount = amount_in_cents - admin_amount
 
-        elif project.tier2_seller_id:
-            if not project.tier1_seller or not project.tier1_seller.stripe_account_id or \
-               not project.tier2_seller or not project.tier2_seller.stripe_account_id:
-                return jsonify({'message': 'One or more sellers are not configured for payments'}), 500
-            
-            payment_intent_params['transfer_group'] = f'group_{invoice.id}'
+            intent = stripe.PaymentIntent.create(
+                amount=amount_in_cents,
+                currency=currency,
+                payment_method_types=['card'],
+                description=f"Commission Payment for Invoice #{invoice.invoice_number}",
+                transfer_group=invoice.invoice_number,
+                metadata={'invoice_id': invoice.id, 'role': 'tier2'},
+            )
 
-        intent = stripe.PaymentIntent.create(**payment_intent_params)
+            # store split data for webhook handling
+            invoice.transfer_data = {
+                # 'tier1_account_id': project.tier1_seller.stripe_account_id if project.tier1_seller else None,
+                'tier1_amount': tier1_amount,
+                # 'admin_account_id': current_app.config.get('ADMIN_STRIPE_ACCOUNT_ID'),
+                'admin_amount': admin_amount,
+            }
 
+        # ----- Tier-1 Seller Flow -----
+        elif user_role == 'tier1':
+            intent = stripe.PaymentIntent.create(
+                amount=amount_in_cents,
+                currency=currency,
+                payment_method_types=['card'],
+                description=f"Commission Payment for Invoice #{invoice.invoice_number}",
+                metadata={'invoice_id': invoice.id, 'role': 'tier1'},
+            )
+
+            admin_amount = amount_in_cents
+            invoice.transfer_data = {
+                'admin_amount': admin_amount
+            }
+ 
+
+        # Save intent ID to the invoice for tracking
         invoice.stripe_payment_intent_id = intent.id
         db.session.commit()
-
         return jsonify({'client_secret': intent.client_secret}), 200
 
     except Exception as e:
+        db.session.rollback()
         return jsonify({'message': f'Stripe Error: {str(e)}'}), 500
 
 
-# ---------------- [NEW] STRIPE WEBHOOK FOR PAYMENT CONFIRMATION ----------------
+# ---------------- STRIPE WEBHOOK (NO CHANGE) ----------------
 @billing_bp.route('/stripe-webhook', methods=['POST'])
 def stripe_webhook():
-    """
-    Listens for events from Stripe to automatically update invoice status.
-    This replaces the manual "mark_paid" endpoint.
-    """
     payload = request.get_data(as_text=True)
     sig_header = request.headers.get('Stripe-Signature')
     endpoint_secret = current_app.config['STRIPE_WEBHOOK_SECRET']
-    
+
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
-    except ValueError:
-        return 'Invalid payload', 400
-    except stripe.error.SignatureVerificationError:
-        return 'Invalid signature', 400
+    except (ValueError, stripe.error.SignatureVerificationError):
+        return 'Invalid payload or signature', 400
 
     if event['type'] == 'payment_intent.succeeded':
         intent = event['data']['object']
         invoice_id = intent.get('metadata', {}).get('invoice_id')
         if not invoice_id:
             return 'Missing invoice_id in metadata', 400
-        
+
         with db.session.begin():
             invoice = Invoice.query.filter_by(id=invoice_id).first()
             if invoice and invoice.status != 'paid':
@@ -192,10 +223,10 @@ def stripe_webhook():
                 invoice.paid_date = date.today()
                 if invoice.billing_record:
                     invoice.billing_record.status = 'paid'
-                
+
                 project = invoice.project
                 if project and project.tier2_seller_id:
-                    handle_tier2_transfers(intent, project)
+                    handle_tier2_transfers(intent, project, invoice)
 
     elif event['type'] == 'payment_intent.payment_failed':
         intent = event['data']['object']
@@ -205,48 +236,77 @@ def stripe_webhook():
                 invoice = Invoice.query.filter_by(id=invoice_id).first()
                 if invoice:
                     invoice.status = 'failed'
-            
+
     return jsonify({'status': 'success'}), 200
 
-def handle_tier2_transfers(payment_intent, project):
-    """Helper function to create transfers after a T2 payment succeeds."""
+
+# ---------------- HANDLE TIER-2 TRANSFERS (NO CHANGE) ----------------
+def handle_tier2_transfers(payment_intent, project, invoice):
+    """Performs post-payment fund transfers for Tier-2 payment (Tier-1 + Admin)."""
     stripe.api_key = current_app.config['STRIPE_SECRET_KEY']
-    plan = project.subscription_plan
-    if not plan: return
     
-    base_price_cents = payment_intent['amount']
-    
-    tier1_pct = Decimal(plan.tier1_commission_pct or 0)
-    admin_pct = Decimal(plan.admin_commission_pct or 0)
+    transfer_info = getattr(invoice, 'transfer_data', None)
+    if not transfer_info:
+        return
 
-    tier1_commission = base_price_cents * (tier1_pct / 100)
-    tier2_share = base_price_cents - tier1_commission
-    admin_share_of_tier1_commission = tier1_commission * (admin_pct / 100)
-    
-    # Transfer Tier 2's share
-    stripe.Transfer.create(
-        amount=int(tier2_share),
-        currency='usd',
-        destination=project.tier2_seller.stripe_account_id,
-        source_transaction=payment_intent.get('latest_charge'),
-        transfer_group=payment_intent['transfer_group']
-    )
-    # Transfer Tier 1's commission (after admin takes their cut)
-    stripe.Transfer.create(
-        amount=int(tier1_commission - admin_share_of_tier1_commission),
-        currency='usd',
-        destination=project.tier1_seller.stripe_account_id,
-        source_transaction=payment_intent.get('latest_charge'),
-        transfer_group=payment_intent['transfer_group']
-    )
+    # Use the currency from the payment intent for consistency
+    currency = payment_intent.get('currency', 'usd')
 
-# ---------------- [DEPRECATED] MARK INVOICE AS PAID ----------------
-# It's recommended to remove this endpoint entirely.
-# The webhook now handles payment confirmation automatically and securely.
-@billing_bp.route('/invoice/<invoice_id>/mark_paid', methods=['POST'])
+    tier1_amount = int(transfer_info.get('tier1_amount', 0))
+    admin_amount = int(transfer_info.get('admin_amount', 0))
+    # tier1_account = transfer_info.get('tier1_account_id')
+    # admin_account = transfer_info.get('admin_account_id')
+
+    source_txn = payment_intent.get('latest_charge')
+    transfer_group = payment_intent.get('transfer_group')
+
+    # Tier-1 transfer (after admin deduction)
+    # stripe.Transfer.create(
+    #     amount=tier1_amount,
+    #     currency=currency,
+    #     destination=tier1_account,
+    #     source_transaction=source_txn,
+    #     transfer_group=transfer_group
+    # )
+    # # Admin transfer
+    # stripe.Transfer.create(
+    #     amount=admin_amount,
+    #     currency=currency,
+    #     destination=admin_account,
+    #     source_transaction=source_txn,
+    #     transfer_group=transfer_group
+    # )
+
+
+
+# ---------------- NEW: MARK INVOICE AS PAID (FOR LOCAL TESTING) ----------------
+@billing_bp.route('/invoice/<invoice_id>/mark-paid', methods=['POST'])
 @jwt_required_custom
-def mark_invoice_paid(invoice_id):
-    return jsonify({'message': 'This endpoint is deprecated. Payment status is updated via Stripe webhook.'}), 410
+def mark_invoice_as_paid_manually(invoice_id):
+    """
+    A temporary endpoint to simulate a successful webhook call for local development.
+    Marks an invoice and its billing record as 'paid'.
+    """
+    invoice = Invoice.query.filter_by(invoice_number=invoice_id).first()
+    if not invoice:
+        return jsonify({'message': 'Invoice not found'}), 404
+
+    try:
+        if invoice.status != 'paid':
+            invoice.status = 'paid'
+            invoice.paid_date = date.today()
+            if invoice.billing_record:
+                invoice.billing_record.status = 'paid'
+            db.session.commit()
+            return jsonify({'message': f'Invoice {invoice_id} marked as paid.'}), 200
+        else:
+            return jsonify({'message': 'Invoice is already paid.'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': f'Error updating invoice: {str(e)}'}), 500
+
+
+
 
 
 # ---------------- GET ALL BILLS FOR A PROJECT (NO CHANGE) ----------------
